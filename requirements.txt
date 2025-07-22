@@ -1,0 +1,7 @@
+flask==2.3.3
+flask-cors==4.0.0
+telethon==1.29.3
+google-api-python-client==2.103.0
+google-auth-httplib2==0.1.1
+google-auth-oauthlib==2.1.0
+google-auth==2.23.3

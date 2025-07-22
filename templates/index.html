@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Telegram Video Manager</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 20px;
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        overflow: hidden;
+      }
+
+      .header {
+        background: linear-gradient(135deg, #1e3c72, #2a5298);
+        color: white;
+        padding: 30px;
+        text-align: center;
+      }
+
+      .header h1 {
+        font-size: 2.5rem;
+        margin-bottom: 10px;
+        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+      }
+
+      .header p {
+        font-size: 1.1rem;
+        opacity: 0.9;
+      }
+
+      .main-content {
+        padding: 40px;
+      }
+
+      .control-panel {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 25px;
+        margin-bottom: 40px;
+      }
+
+      .control-card {
+        background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+        border-radius: 15px;
+        padding: 25px;
+        border: 1px solid #dee2e6;
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .control-card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 4px;
+        background: linear-gradient(90deg, #667eea, #764ba2);
+      }
+
+      .control-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 15px 30px rgba(0, 0, 0, 0.1);
+      }
+
+      .control-card h3 {
+        color: #2c3e50;
+        margin-bottom: 15px;
+        font-size: 1.3rem;
+      }
+
+      .control-card p {
+        color: #6c757d;
+        margin-bottom: 20px;
+        line-height: 1.5;
+      }
+
+      .btn {
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        color: white;
+        border: none;
+        padding: 12px 25px;
+        border-radius: 25px;
+        cursor: pointer;
+        font-size: 1rem;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        width: 100%;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+      }
+
+      .btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+      }
+
+      .btn:active {
+        transform: translateY(0);
+      }
+
+      .btn:disabled {
+        background: #6c757d;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .btn.danger {
+        background: linear-gradient(135deg, #e74c3c, #c0392b);
+        box-shadow: 0 4px 15px rgba(231, 76, 60, 0.3);
+      }
+
+      .btn.auto {
+        background: linear-gradient(135deg, #27ae60, #2ecc71);
+        box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3);
+      }
+
+      .status-panel {
+        background: #f8f9fa;
+        border-radius: 15px;
+        padding: 30px;
+        margin-bottom: 30px;
+      }
+
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 20px;
+      }
+
+      .status-item {
+        background: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        border-left: 4px solid;
+      }
+
+      .status-item.download {
+        border-left-color: #3498db;
+      }
+
+      .status-item.upload {
+        border-left-color: #e74c3c;
+      }
+
+      .status-item.monitoring {
+        border-left-color: #27ae60;
+      }
+
+      .status-item h4 {
+        color: #2c3e50;
+        margin-bottom: 10px;
+        font-size: 1.1rem;
+      }
+
+      .status-message {
+        color: #6c757d;
+        font-size: 0.9rem;
+        margin-bottom: 8px;
+      }
+
+      .status-indicator {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 8px;
+      }
+
+      .status-indicator.running {
+        background: #27ae60;
+        animation: pulse 2s infinite;
+      }
+
+      .status-indicator.idle {
+        background: #95a5a6;
+      }
+
+      @keyframes pulse {
+        0% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
+
+      .videos-list {
+        background: white;
+        border-radius: 15px;
+        padding: 25px;
+        box-shadow: 0 2px 20px rgba(0, 0, 0, 0.08);
+      }
+
+      .videos-list h3 {
+        color: #2c3e50;
+        margin-bottom: 20px;
+        font-size: 1.4rem;
+      }
+
+      .video-item {
+        background: #f8f9fa;
+        padding: 15px;
+        margin-bottom: 10px;
+        border-radius: 8px;
+        border-left: 3px solid #667eea;
+      }
+
+      .video-item:last-child {
+        margin-bottom: 0;
+      }
+
+      .video-name {
+        font-weight: 600;
+        color: #2c3e50;
+        margin-bottom: 5px;
+      }
+
+      .video-details {
+        font-size: 0.9rem;
+        color: #6c757d;
+      }
+
+      .loading {
+        text-align: center;
+        padding: 40px;
+        color: #6c757d;
+      }
+
+      .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #667eea;
+        border-radius: 50%;
+        width: 40px;
+        height: 40px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 20px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .alert {
+        padding: 15px;
+        margin-bottom: 20px;
+        border-radius: 8px;
+        font-weight: 500;
+      }
+
+      .alert.success {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+
+      .alert.error {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+
+      .interval-input {
+        padding: 8px 12px;
+        border: 2px solid #dee2e6;
+        border-radius: 8px;
+        margin-bottom: 15px;
+        width: 100%;
+        font-size: 1rem;
+      }
+
+      .interval-input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      .refresh-controls {
+        text-align: center;
+        margin-bottom: 20px;
+      }
+
+      .refresh-btn {
+        background: linear-gradient(135deg, #17a2b8, #138496);
+        color: white;
+        border: none;
+        padding: 8px 20px;
+        border-radius: 20px;
+        cursor: pointer;
+        font-size: 0.9rem;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        margin: 0 5px;
+      }
+
+      .refresh-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 15px rgba(23, 162, 184, 0.3);
+      }
+
+      @media (max-width: 768px) {
+        .header h1 {
+          font-size: 2rem;
+        }
+
+        .main-content {
+          padding: 20px;
+        }
+
+        .control-panel {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>🎬 Telegram Video Manager</h1>
+        <p>
+          Download videos from Telegram and automatically upload to Google Drive
+        </p>
+      </div>
+
+      <div class="main-content">
+        <!-- Auto Mode Button -->
+        <div style="text-align: center; margin-bottom: 30px">
+          <button
+            class="btn auto"
+            onclick="startAutoMode()"
+            style="width: 300px; font-size: 1.2rem; padding: 15px 30px"
+          >
+            🚀 Start Auto Mode
+          </button>
+          <p style="margin-top: 10px; color: #6c757d; font-size: 0.9rem">
+            Downloads videos → Uploads to Drive → Starts monitoring
+          </p>
+        </div>
+
+        <!-- Control Panel -->
+        <div class="control-panel">
+          <div class="control-card">
+            <h3>📥 Download Videos</h3>
+            <p>Download all videos from your Telegram channel once</p>
+            <button class="btn" onclick="startDownload()" id="downloadBtn">
+              Start Download
+            </button>
+          </div>
+
+          <div class="control-card">
+            <h3>☁️ Upload to Drive</h3>
+            <p>Upload all downloaded videos to Google Drive once</p>
+            <button class="btn" onclick="startUpload()" id="uploadBtn">
+              Start Upload
+            </button>
+          </div>
+
+          <div class="control-card">
+            <h3>🔄 Continuous Monitoring</h3>
+            <p>Monitor and auto-upload new videos every X minutes</p>
+            <input
+              type="number"
+              class="interval-input"
+              id="monitorInterval"
+              placeholder="Interval in minutes (default: 30)"
+              min="1"
+            />
+            <button class="btn" onclick="startMonitoring()" id="monitorBtn">
+              Start Monitoring
+            </button>
+            <button
+              class="btn danger"
+              onclick="stopMonitoring()"
+              id="stopMonitorBtn"
+              style="margin-top: 10px"
+            >
+              Stop Monitoring
+            </button>
+          </div>
+
+          <div class="control-card">
+            <h3>📋 List Videos</h3>
+            <p>View all videos that have been uploaded to Google Drive</p>
+            <button class="btn" onclick="listUploaded()">
+              Show Uploaded Videos
+            </button>
+          </div>
+        </div>
+
+        <!-- Status Panel -->
+        <div class="status-panel">
+          <h3 style="margin-bottom: 15px; color: #2c3e50">📊 System Status</h3>
+
+          <!-- Refresh Controls -->
+          <div class="refresh-controls">
+            <button class="refresh-btn" onclick="updateStatus()">
+              🔄 Refresh Status
+            </button>
+            <button
+              class="refresh-btn"
+              onclick="toggleAutoRefresh()"
+              id="autoRefreshBtn"
+            >
+              ⏸️ Auto-Refresh: ON
+            </button>
+            <span style="font-size: 0.8rem; color: #6c757d; margin-left: 10px">
+              Auto-refresh every <span id="refreshInterval">10</span> seconds
+            </span>
+          </div>
+
+          <div class="status-grid">
+            <div class="status-item download">
+              <h4>
+                <span
+                  class="status-indicator idle"
+                  id="downloadIndicator"
+                ></span
+                >Download Status
+              </h4>
+              <div class="status-message" id="downloadStatus">
+                Ready to download
+              </div>
+            </div>
+            <div class="status-item upload">
+              <h4>
+                <span class="status-indicator idle" id="uploadIndicator"></span
+                >Upload Status
+              </h4>
+              <div class="status-message" id="uploadStatus">
+                Ready to upload
+              </div>
+            </div>
+            <div class="status-item monitoring">
+              <h4>
+                <span class="status-indicator idle" id="monitorIndicator"></span
+                >Monitoring Status
+              </h4>
+              <div class="status-message" id="monitorStatus">
+                Monitoring stopped
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Videos List -->
+        <div class="videos-list" id="videosList" style="display: none">
+          <h3>📹 Uploaded Videos</h3>
+          <div id="videosContent"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Global variables for refresh management
+      let autoRefreshEnabled = true;
+      let refreshInterval = 10; // seconds
+      let refreshTimer = null;
+      let isAnyOperationRunning = false;
+
+      // Start with initial status update and setup auto-refresh
+      updateStatus();
+      startAutoRefresh();
+
+      function startAutoRefresh() {
+        if (refreshTimer) clearInterval(refreshTimer);
+
+        refreshTimer = setInterval(() => {
+          if (autoRefreshEnabled) {
+            updateStatus();
+          }
+        }, refreshInterval * 1000);
+      }
+
+      function toggleAutoRefresh() {
+        autoRefreshEnabled = !autoRefreshEnabled;
+        const btn = document.getElementById("autoRefreshBtn");
+
+        if (autoRefreshEnabled) {
+          btn.textContent = "⏸️ Auto-Refresh: ON";
+          btn.style.background = "linear-gradient(135deg, #27ae60, #2ecc71)";
+          startAutoRefresh();
+        } else {
+          btn.textContent = "▶️ Auto-Refresh: OFF";
+          btn.style.background = "linear-gradient(135deg, #e74c3c, #c0392b)";
+          if (refreshTimer) {
+            clearInterval(refreshTimer);
+            refreshTimer = null;
+          }
+        }
+      }
+
+      function showAlert(message, type = "success") {
+        const alertDiv = document.createElement("div");
+        alertDiv.className = `alert ${type}`;
+        alertDiv.textContent = message;
+
+        const mainContent = document.querySelector(".main-content");
+        mainContent.insertBefore(alertDiv, mainContent.firstChild);
+
+        setTimeout(() => {
+          alertDiv.remove();
+        }, 5000);
+      }
+
+      async function updateStatus() {
+        try {
+          const response = await fetch("/api/status");
+          const status = await response.json();
+
+          // Track if any operation is running
+          const anyRunning =
+            status.download.running ||
+            status.upload.running ||
+            status.monitoring.running;
+
+          // Adjust refresh frequency based on activity
+          if (anyRunning && !isAnyOperationRunning) {
+            // Something just started running, refresh more frequently
+            refreshInterval = 5;
+            isAnyOperationRunning = true;
+            startAutoRefresh();
+          } else if (!anyRunning && isAnyOperationRunning) {
+            // Nothing is running anymore, slow down refresh
+            refreshInterval = 10;
+            isAnyOperationRunning = false;
+            startAutoRefresh();
+          }
+
+          // Update refresh interval display
+          document.getElementById("refreshInterval").textContent =
+            refreshInterval;
+
+          // Update download status
+          const downloadIndicator =
+            document.getElementById("downloadIndicator");
+          const downloadStatus = document.getElementById("downloadStatus");
+          const downloadBtn = document.getElementById("downloadBtn");
+
+          if (status.download.running) {
+            downloadIndicator.className = "status-indicator running";
+            downloadStatus.textContent = status.download.message;
+            downloadBtn.disabled = true;
+            downloadBtn.textContent = "Downloading...";
+          } else {
+            downloadIndicator.className = "status-indicator idle";
+            downloadStatus.textContent =
+              status.download.message || "Ready to download";
+            downloadBtn.disabled = false;
+            downloadBtn.textContent = "Start Download";
+          }
+
+          // Update upload status
+          const uploadIndicator = document.getElementById("uploadIndicator");
+          const uploadStatus = document.getElementById("uploadStatus");
+          const uploadBtn = document.getElementById("uploadBtn");
+
+          if (status.upload.running) {
+            uploadIndicator.className = "status-indicator running";
+            uploadStatus.textContent = status.upload.message;
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = "Uploading...";
+          } else {
+            uploadIndicator.className = "status-indicator idle";
+            uploadStatus.textContent =
+              status.upload.message || "Ready to upload";
+            uploadBtn.disabled = false;
+            uploadBtn.textContent = "Start Upload";
+          }
+
+          // Update monitoring status
+          const monitorIndicator = document.getElementById("monitorIndicator");
+          const monitorStatus = document.getElementById("monitorStatus");
+          const monitorBtn = document.getElementById("monitorBtn");
+          const stopMonitorBtn = document.getElementById("stopMonitorBtn");
+
+          if (status.monitoring.running) {
+            monitorIndicator.className = "status-indicator running";
+            monitorStatus.textContent = status.monitoring.message;
+            monitorBtn.disabled = true;
+            monitorBtn.textContent = "Monitoring Active...";
+            stopMonitorBtn.disabled = false;
+          } else {
+            monitorIndicator.className = "status-indicator idle";
+            monitorStatus.textContent =
+              status.monitoring.message || "Monitoring stopped";
+            monitorBtn.disabled = false;
+            monitorBtn.textContent = "Start Monitoring";
+            stopMonitorBtn.disabled = true;
+          }
+        } catch (error) {
+          console.error("Error updating status:", error);
+        }
+      }
+
+      async function startAutoMode() {
+        try {
+          const response = await fetch("/api/auto-mode", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            showAlert(result.message, "success");
+            // Force immediate status update when starting operations
+            setTimeout(updateStatus, 500);
+          } else {
+            showAlert(result.error || "Failed to start auto mode", "error");
+          }
+        } catch (error) {
+          showAlert("Error starting auto mode: " + error.message, "error");
+        }
+      }
+
+      async function startDownload() {
+        try {
+          const response = await fetch("/api/start-download", {
+            method: "POST",
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            showAlert(result.message, "success");
+            setTimeout(updateStatus, 500);
+          } else {
+            showAlert(result.error || "Failed to start download", "error");
+          }
+        } catch (error) {
+          showAlert("Error starting download: " + error.message, "error");
+        }
+      }
+
+      async function startUpload() {
+        try {
+          const response = await fetch("/api/start-upload", {
+            method: "POST",
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            showAlert(result.message, "success");
+            setTimeout(updateStatus, 500);
+          } else {
+            showAlert(result.error || "Failed to start upload", "error");
+          }
+        } catch (error) {
+          showAlert("Error starting upload: " + error.message, "error");
+        }
+      }
+
+      async function startMonitoring() {
+        const interval = document.getElementById("monitorInterval").value || 30;
+
+        try {
+          const response = await fetch("/api/start-monitoring", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              interval: parseInt(interval),
+            }),
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            showAlert(result.message, "success");
+            setTimeout(updateStatus, 500);
+          } else {
+            showAlert(result.error || "Failed to start monitoring", "error");
+          }
+        } catch (error) {
+          showAlert("Error starting monitoring: " + error.message, "error");
+        }
+      }
+
+      async function stopMonitoring() {
+        try {
+          const response = await fetch("/api/stop-monitoring", {
+            method: "POST",
+          });
+
+          const result = await response.json();
+
+          if (response.ok) {
+            showAlert(result.message, "success");
+            setTimeout(updateStatus, 500);
+          } else {
+            showAlert(result.error || "Failed to stop monitoring", "error");
+          }
+        } catch (error) {
+          showAlert("Error stopping monitoring: " + error.message, "error");
+        }
+      }
+
+      async function listUploaded() {
+        const videosList = document.getElementById("videosList");
+        const videosContent = document.getElementById("videosContent");
+
+        videosList.style.display = "block";
+        videosContent.innerHTML =
+          '<div class="loading"><div class="spinner"></div>Loading videos...</div>';
+
+        try {
+          const response = await fetch("/api/list-uploaded");
+          const result = await response.json();
+
+          if (response.ok) {
+            if (result.videos.length === 0) {
+              videosContent.innerHTML =
+                '<p style="text-align: center; color: #6c757d;">No videos uploaded yet</p>';
+            } else {
+              let html = `<p style="margin-bottom: 15px; font-weight: 600;">Total: ${result.count} videos</p>`;
+
+              result.videos.forEach((video) => {
+                html += `
+                                <div class="video-item">
+                                    <div class="video-name">📹 ${
+                                      video.filename
+                                    }</div>
+                                    <div class="video-details">
+                                        Size: ${video.size_mb} MB | 
+                                        Uploaded: ${new Date(
+                                          video.uploaded_at
+                                        ).toLocaleString()} | 
+                                        Drive ID: ${video.drive_id}
+                                    </div>
+                                </div>
+                            `;
+              });
+
+              videosContent.innerHTML = html;
+            }
+          } else {
+            videosContent.innerHTML = `<p style="text-align: center; color: #e74c3c;">Error: ${result.error}</p>`;
+          }
+        } catch (error) {
+          videosContent.innerHTML = `<p style="text-align: center; color: #e74c3c;">Error loading videos: ${error.message}</p>`;
+        }
+      }
+    </script>
+  </body>
+</html>
