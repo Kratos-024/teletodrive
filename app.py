@@ -718,6 +718,23 @@ if __name__ == '__main__':
     # Get port from environment variable (required for Render)
     port = int(os.environ.get('PORT', 5000))
     
+    # Print access information
+    print("🚀 Telegram to Google Drive - Direct Upload")
+    print("=" * 50)
+    print(f"✅ Server starting on port: {port}")
+    print(f"🌐 Local access: http://localhost:{port}")
+    print(f"🔗 Network access: http://0.0.0.0:{port}")
+    print("=" * 50)
+    print("📱 Frontend Interface:")
+    print(f"   • Web UI: http://localhost:{port}/")
+    print(f"   • API Status: http://localhost:{port}/api/status")
+    print(f"   • Health Check: http://localhost:{port}/api/health")
+    print("=" * 50)
+    print("🎯 For deployment (Render/Heroku):")
+    print("   • Your app will be available at your deployment URL")
+    print("   • Make sure to set environment variables!")
+    print("=" * 50)
+    
     # Run with production settings for deployment
     app.run(
         host='0.0.0.0',
