@@ -14,7 +14,7 @@ from pathlib import Path
 def check_dependencies():
     """Check if required dependencies are installed"""
     required_packages = [
-        'flask', 'flask_cors', 'telethon', 
+        'flask', 'flask_cors', 'telethon',
         'googleapiclient', 'google_auth_oauthlib'
     ]
     
@@ -38,7 +38,7 @@ def install_dependencies():
         'telethon==1.29.3',
         'google-api-python-client==2.103.0',
         'google-auth-httplib2==0.1.1',
-        'google-auth-oauthlib==2.1.0',
+        'google-auth-oauthlib==1.2.2',  # fixed version
         'google-auth==2.23.3'
     ]
     
@@ -122,14 +122,8 @@ def main():
     
     if missing_deps:
         print(f"❌ Missing packages: {', '.join(missing_deps)}")
-        
-        install_choice = input("\n📦 Would you like to install missing packages? (y/n): ").lower()
-        if install_choice == 'y':
-            if not install_dependencies():
-                print("❌ Failed to install dependencies. Please install manually.")
-                return
-        else:
-            print("❌ Cannot continue without required packages.")
+        if not install_dependencies():
+            print("❌ Failed to install dependencies. Please install manually.")
             return
     else:
         print("✅ All dependencies are installed!")
@@ -171,17 +165,11 @@ def main():
     time.sleep(3)
     
     try:
-        # Open browser automatically
         webbrowser.open('http://localhost:5000')
-        
-        # Start the Flask app
         print("\n🎉 Starting Telegram Video Manager!")
         print("🔧 Press Ctrl+C to stop the server")
         print("=" * 60)
-        
-        # Import and run the Flask app
         os.system('python app.py')
-        
     except KeyboardInterrupt:
         print("\n\n👋 Telegram Video Manager stopped by user")
     except FileNotFoundError:
@@ -197,5 +185,3 @@ if __name__ == '__main__':
         print("\n\n👋 Setup cancelled by user")
     except Exception as e:
         print(f"\n❌ Unexpected error: {e}")
-    
-    input("\n📱 Press Enter to exit...")
