@@ -128,7 +128,7 @@ def main():
     else:
         print("✅ All dependencies are installed!")
     
-    # Check file structure
+    # Check file structurbe
     print("\n2️⃣  Checking file structure...")
     missing_files = check_file_structure()
     
@@ -165,7 +165,7 @@ def main():
     time.sleep(3)
     
     try:
-        webbrowser.open('http://localhost:5000')
+        webbrowser.open('https://teletodrive-y9jp.onrender.com')
         print("\n🎉 Starting Telegram Video Manager!")
         print("🔧 Press Ctrl+C to stop the server")
         print("=" * 60)
