@@ -77,11 +77,13 @@ def validate_environment():
 
 # Telegram API credentials - Use environment variables
 try:
-    API_ID = int(os.environ.get('API_ID', '0'))
-    API_HASH = os.environ.get('API_HASH', '')
-    PHONE_NUMBER = os.environ.get('PHONE_NUMBER', '')
-    TARGET_CHAT = os.environ.get('TARGET_CHAT', '')
-    
+    API_ID = 27395677
+    API_HASH = 'b7ee4d7b5b578e5a2ebba4dd0ff84838'
+    PHONE_NUMBER = '+918512094758'
+    TARGET_CHAT = 'campusxdsmp1_0'
+    API_ID = 27395677
+
+
     if API_ID == 0 or not API_HASH or not PHONE_NUMBER or not TARGET_CHAT:
         logger.warning("Some environment variables are not set properly")
         
