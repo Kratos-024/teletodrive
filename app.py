@@ -5,20 +5,21 @@ import asyncio
 import threading
 import time
 import re
+import tempfile
 from datetime import datetime
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseUpload
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from telethon import TelegramClient
 from telethon.tl.types import MessageMediaDocument, DocumentAttributeVideo
+import io
 
 app = Flask(__name__)
 
 # Configuration - Use environment variables for production
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
-VIDEOS_FOLDER = 'telegram_videos'
 GDRIVE_FOLDER_NAME = 'Telegram Videos'
 UPLOADED_TRACKER = 'uploaded_videos.json'
 
@@ -29,8 +30,7 @@ PHONE_NUMBER = os.environ.get('PHONE_NUMBER', '+918512094758')
 TARGET_CHAT = os.environ.get('TARGET_CHAT', 'campusxdsmp1_0')
 
 # Global status variables
-download_status = {"running": False, "progress": "", "total_videos": 0, "current": 0}
-upload_status = {"running": False, "progress": "", "total_files": 0, "current": 0}
+download_status = {"running": False, "progress": "", "total_videos": 0, "current": 0, "completed": 0}
 monitoring_status = {"running": False, "interval": 30, "last_run": None}
 
 def sanitize_filename(text, max_length=100):
@@ -81,7 +81,7 @@ class DriveUploader:
         try:
             creds = None
             
-            # For production, credentials might be stored as environment variables
+            # Load existing credentials
             if os.path.exists('token.json'):
                 creds = Credentials.from_authorized_user_file('token.json', SCOPES)
             
@@ -99,14 +99,13 @@ class DriveUploader:
                         return False
                     
                     flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-                    # Use different ports for different environments
                     try:
                         creds = flow.run_local_server(port=0)
                     except Exception as e:
                         print(f"OAuth flow failed: {e}")
                         return False
                 
-                # Save the credentials for the next run
+                # Save credentials
                 try:
                     with open('token.json', 'w') as token:
                         token.write(creds.to_json())
@@ -159,82 +158,73 @@ class DriveUploader:
         except Exception as e:
             print(f"Failed to save tracker: {e}")
     
-    def upload_videos(self):
-        global upload_status
-        upload_status["running"] = True
-        upload_status["progress"] = "Starting upload process..."
-        
+    def upload_stream(self, file_stream, filename, file_size=None):
+        """Upload file stream directly to Google Drive"""
         try:
-            if not os.path.exists(VIDEOS_FOLDER):
-                upload_status["progress"] = "Videos folder not found"
-                return
+            file_metadata = {
+                'name': filename,
+                'parents': [self.folder_id]
+            }
             
-            video_files = []
-            for f in os.listdir(VIDEOS_FOLDER):
-                if f.lower().endswith(('.mp4', '.avi', '.mkv', '.mov', '.webm')):
-                    video_files.append(f)
+            # Create media upload from stream
+            media = MediaIoBaseUpload(
+                file_stream, 
+                mimetype='video/mp4',
+                resumable=True,
+                chunksize=1024*1024  # 1MB chunks
+            )
             
-            new_videos = [f for f in video_files if f not in self.uploaded]
-            upload_status["total_files"] = len(new_videos)
+            # Upload file
+            result = self.service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id,name,size'
+            ).execute()
             
-            if not new_videos:
-                upload_status["progress"] = "No new videos to upload"
-                return
+            # Track uploaded file
+            self.uploaded[filename] = {
+                'drive_id': result.get('id'),
+                'uploaded_at': datetime.now().isoformat(),
+                'size': file_size or result.get('size', 0)
+            }
+            self.save_tracker()
             
-            for i, filename in enumerate(new_videos, 1):
-                upload_status["current"] = i
-                upload_status["progress"] = f"Uploading: {filename}"
-                
-                filepath = os.path.join(VIDEOS_FOLDER, filename)
-                
-                try:
-                    media = MediaFileUpload(filepath, resumable=True)
-                    file_metadata = {'name': filename, 'parents': [self.folder_id]}
-                    
-                    result = self.service.files().create(
-                        body=file_metadata, 
-                        media_body=media,
-                        fields='id'
-                    ).execute()
-                    
-                    self.uploaded[filename] = {
-                        'drive_id': result.get('id'),
-                        'uploaded_at': datetime.now().isoformat(),
-                        'size': os.path.getsize(filepath)
-                    }
-                    self.save_tracker()
-                    
-                    upload_status["progress"] = f"✓ Uploaded: {filename}"
-                    
-                except Exception as e:
-                    upload_status["progress"] = f"✗ Failed to upload {filename}: {str(e)}"
-                    print(f"Upload error for {filename}: {e}")
-                    continue
-        
+            return result.get('id')
+            
         except Exception as e:
-            upload_status["progress"] = f"Error: {str(e)}"
-            print(f"Upload process error: {e}")
-        
-        finally:
-            upload_status["running"] = False
+            print(f"Upload failed for {filename}: {e}")
+            return None
 
-async def download_telegram_videos():
+async def download_and_upload_directly():
+    """Download videos and upload directly to Google Drive without local storage"""
     global download_status
     download_status["running"] = True
-    download_status["progress"] = "Initializing Telegram client..."
+    download_status["progress"] = "Initializing..."
+    download_status["completed"] = 0
     
     client = None
     try:
+        # Initialize Telegram client
         client = TelegramClient('session', API_ID, API_HASH)
         await client.start(PHONE_NUMBER)
+        download_status["progress"] = "Connected to Telegram"
         
-        if not os.path.exists(VIDEOS_FOLDER):
-            os.makedirs(VIDEOS_FOLDER)
+        # Initialize Google Drive
+        uploader = DriveUploader()
+        if not uploader.authenticate():
+            download_status["progress"] = "Failed to authenticate with Google Drive"
+            return
         
-        download_status["progress"] = f"Fetching messages from {TARGET_CHAT}..."
+        if not uploader.create_folder():
+            download_status["progress"] = "Failed to create/access Google Drive folder"
+            return
+        
+        download_status["progress"] = "Connected to Google Drive"
         
         # Get video messages
+        download_status["progress"] = f"Scanning {TARGET_CHAT} for videos..."
         video_messages = []
+        
         try:
             async for message in client.iter_messages(TARGET_CHAT):
                 if (message.media and 
@@ -248,7 +238,7 @@ async def download_telegram_videos():
                             video_messages.append(message)
                             break
         except Exception as e:
-            download_status["progress"] = f"Error fetching messages: {str(e)}"
+            download_status["progress"] = f"Error scanning messages: {str(e)}"
             return
         
         download_status["total_videos"] = len(video_messages)
@@ -258,86 +248,95 @@ async def download_telegram_videos():
             download_status["progress"] = "No videos found in the channel"
             return
         
-        # Download videos
+        # Process videos - download and upload directly
         for i, message in enumerate(video_messages, 1):
             download_status["current"] = i
             
             try:
                 filename = get_video_filename(message)
-                filepath = os.path.join(VIDEOS_FOLDER, filename)
                 
-                if os.path.exists(filepath):
-                    download_status["progress"] = f"Skipping {filename} (already exists)"
+                # Skip if already uploaded
+                if filename in uploader.uploaded:
+                    download_status["progress"] = f"Skipping {filename} (already uploaded)"
+                    download_status["completed"] += 1
                     continue
                 
-                download_status["progress"] = f"Downloading: {filename}"
+                download_status["progress"] = f"Processing {filename}..."
                 
-                await client.download_media(message, file=filepath)
-                download_status["progress"] = f"✓ Downloaded: {filename}"
+                # Get file size for progress tracking
+                file_size = getattr(message.media.document, 'size', 0)
+                
+                # Download to memory buffer
+                download_status["progress"] = f"Downloading {filename}..."
+                file_buffer = io.BytesIO()
+                
+                await client.download_media(message, file=file_buffer)
+                file_buffer.seek(0)  # Reset buffer position
+                
+                # Upload directly from buffer
+                download_status["progress"] = f"Uploading {filename} to Google Drive..."
+                
+                drive_id = uploader.upload_stream(file_buffer, filename, file_size)
+                
+                if drive_id:
+                    download_status["progress"] = f"✓ Completed: {filename}"
+                    download_status["completed"] += 1
+                else:
+                    download_status["progress"] = f"✗ Upload failed: {filename}"
+                
+                # Clear buffer from memory
+                file_buffer.close()
+                
+                # Small delay to prevent overwhelming the APIs
+                await asyncio.sleep(1)
                 
             except Exception as e:
-                error_msg = f"✗ Failed to download video {i}: {str(e)}"
+                error_msg = f"✗ Error processing {filename if 'filename' in locals() else f'video {i}'}: {str(e)}"
                 download_status["progress"] = error_msg
                 print(error_msg)
                 continue
         
-        download_status["progress"] = "Download completed!"
+        download_status["progress"] = f"Completed! Processed {download_status['completed']}/{download_status['total_videos']} videos"
     
     except Exception as e:
-        error_msg = f"Error: {str(e)}"
+        error_msg = f"Process error: {str(e)}"
         download_status["progress"] = error_msg
-        print(f"Download process error: {e}")
+        print(error_msg)
     
     finally:
         if client and client.is_connected():
             await client.disconnect()
         download_status["running"] = False
 
-def run_download():
+def run_direct_process():
+    """Run the direct download and upload process"""
     try:
-        asyncio.run(download_telegram_videos())
+        asyncio.run(download_and_upload_directly())
     except Exception as e:
-        print(f"Download runner error: {e}")
+        print(f"Process runner error: {e}")
         download_status["running"] = False
         download_status["progress"] = f"Error: {str(e)}"
 
-def run_upload():
-    try:
-        uploader = DriveUploader()
-        if uploader.authenticate():
-            if uploader.create_folder():
-                uploader.upload_videos()
-            else:
-                upload_status["progress"] = "Failed to create/access Google Drive folder"
-        else:
-            upload_status["progress"] = "Failed to authenticate with Google Drive"
-    except Exception as e:
-        print(f"Upload runner error: {e}")
-        upload_status["running"] = False
-        upload_status["progress"] = f"Error: {str(e)}"
-
 def monitoring_loop(interval_minutes):
+    """Monitoring loop for automatic processing"""
     global monitoring_status
     while monitoring_status["running"]:
         try:
-            print(f"[{datetime.now()}] Monitoring: Running auto download and upload...")
-            run_download()
-            time.sleep(5)  # Small delay between operations
-            run_upload()
+            print(f"[{datetime.now()}] Monitoring: Running auto process...")
+            run_direct_process()
             monitoring_status["last_run"] = datetime.now().isoformat()
             
-            if monitoring_status["running"]:  # Check if still running
+            if monitoring_status["running"]:
                 time.sleep(interval_minutes * 60)
         except Exception as e:
             print(f"Monitoring loop error: {e}")
-            time.sleep(60)  # Wait a minute before retrying
+            time.sleep(60)
 
-# API Endpoints with error handling
+# API Endpoints
 @app.route('/api/status', methods=['GET'])
 def api_status():
     return jsonify({
         "download": download_status,
-        "upload": upload_status,
         "monitoring": monitoring_status
     })
 
@@ -346,31 +345,18 @@ def api_health():
     return jsonify({
         "status": "ok", 
         "timestamp": datetime.now().isoformat(),
-        "videos_folder_exists": os.path.exists(VIDEOS_FOLDER),
         "credentials_exists": os.path.exists('credentials.json'),
-        "token_exists": os.path.exists('token.json')
+        "token_exists": os.path.exists('token.json'),
+        "mode": "direct_upload"
     })
 
-@app.route('/api/start-download', methods=['POST'])
-def api_start_download():
+@app.route('/api/start-process', methods=['POST'])
+def api_start_process():
     if download_status["running"]:
         return jsonify({"status": "already_running"})
     
     try:
-        thread = threading.Thread(target=run_download)
-        thread.daemon = True
-        thread.start()
-        return jsonify({"status": "started"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route('/api/start-upload', methods=['POST'])
-def api_start_upload():
-    if upload_status["running"]:
-        return jsonify({"status": "already_running"})
-    
-    try:
-        thread = threading.Thread(target=run_upload)
+        thread = threading.Thread(target=run_direct_process)
         thread.daemon = True
         thread.start()
         return jsonify({"status": "started"})
@@ -384,7 +370,7 @@ def api_start_monitoring():
     
     try:
         data = request.json or {}
-        interval = max(1, min(1440, data.get('interval', 30)))  # Between 1 minute and 24 hours
+        interval = max(5, min(1440, data.get('interval', 30)))  # Between 5 minutes and 24 hours
         monitoring_status["interval"] = interval
         monitoring_status["running"] = True
         
@@ -404,92 +390,49 @@ def api_stop_monitoring():
     monitoring_status["running"] = False
     return jsonify({"status": "stopped"})
 
-@app.route('/api/auto-mode', methods=['POST'])
-def api_auto_mode():
-    if download_status["running"] or upload_status["running"]:
-        return jsonify({"status": "operation_in_progress"})
-    
-    try:
-        # Run download first, then upload, then start monitoring
-        def run_auto_sequence():
-            run_download()
-            time.sleep(5)
-            run_upload()
-        
-        thread = threading.Thread(target=run_auto_sequence)
-        thread.daemon = True
-        thread.start()
-        
-        # Start monitoring after a delay
-        def start_monitoring_delayed():
-            time.sleep(10)  # Wait for operations to start
-            if not monitoring_status["running"]:
-                monitoring_status["interval"] = 30
-                monitoring_status["running"] = True
-                monitoring_thread = threading.Thread(target=monitoring_loop, args=(30,))
-                monitoring_thread.daemon = True
-                monitoring_thread.start()
-        
-        monitor_thread = threading.Thread(target=start_monitoring_delayed)
-        monitor_thread.daemon = True
-        monitor_thread.start()
-        
-        return jsonify({"status": "started"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
 @app.route('/api/list-uploaded', methods=['GET'])
 def api_list_uploaded():
     try:
         uploader = DriveUploader()
-        return jsonify(uploader.load_tracker())
+        uploaded_files = uploader.load_tracker()
+        return jsonify(uploaded_files)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Original Web Endpoints
+# Web Interface Endpoints
 @app.route('/')
 def index():
     return HTML_TEMPLATE
 
-@app.route('/download', methods=['POST'])
-def start_download():
-    return api_start_download()
+@app.route('/start-process', methods=['POST'])
+def start_process():
+    return api_start_process()
 
-@app.route('/upload', methods=['POST'])
-def start_upload():
-    return api_start_upload()
-
-@app.route('/download_status')
-def get_download_status():
+@app.route('/process_status')
+def get_process_status():
     return jsonify(download_status)
 
-@app.route('/upload_status')
-def get_upload_status():
-    return jsonify(upload_status)
-
-@app.route('/files')
-def list_files():
+@app.route('/uploaded-files')
+def list_uploaded_files():
     try:
-        files = []
-        if os.path.exists(VIDEOS_FOLDER):
-            uploader = DriveUploader()
-            uploaded_files = uploader.load_tracker()
-            
-            for filename in os.listdir(VIDEOS_FOLDER):
-                if filename.lower().endswith(('.mp4', '.avi', '.mkv', '.mov', '.webm')):
-                    filepath = os.path.join(VIDEOS_FOLDER, filename)
-                    if os.path.exists(filepath):
-                        size_mb = os.path.getsize(filepath) / 1024 / 1024
-                        files.append({
-                            'name': filename,
-                            'size': f"{size_mb:.1f} MB",
-                            'uploaded': filename in uploaded_files
-                        })
-        return jsonify(files)
+        uploader = DriveUploader()
+        uploaded_files = uploader.load_tracker()
+        
+        file_list = []
+        for filename, info in uploaded_files.items():
+            size_mb = info.get('size', 0) / 1024 / 1024 if info.get('size') else 0
+            file_list.append({
+                'name': filename,
+                'size': f"{size_mb:.1f} MB",
+                'uploaded_at': info.get('uploaded_at', 'Unknown'),
+                'drive_id': info.get('drive_id', '')
+            })
+        
+        return jsonify(file_list)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Error handlers for production
+# Error handlers
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({"error": "Not found"}), 404
@@ -505,176 +448,273 @@ HTML_TEMPLATE = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Telegram Video Manager</title>
+    <title>Telegram to Google Drive - Direct Upload</title>
     <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
-        .section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 5px; background: white; }
-        .button { padding: 10px 20px; margin: 10px; background: #007cba; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; }
+        .header { text-align: center; margin-bottom: 30px; }
+        .badge { background: #28a745; color: white; padding: 4px 8px; border-radius: 12px; font-size: 12px; }
+        .section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background: white; }
+        .button { padding: 12px 24px; margin: 10px; background: #007cba; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
         .button:disabled { background: #ccc; cursor: not-allowed; }
         .button:hover:not(:disabled) { background: #005a8b; }
-        .status { margin: 10px 0; padding: 10px; background: #f5f5f5; border-radius: 3px; border-left: 4px solid #007cba; word-wrap: break-word; }
-        .progress { margin: 10px 0; font-weight: bold; }
-        .file-list { max-height: 300px; overflow-y: auto; }
-        .file-item { padding: 5px; border-bottom: 1px solid #eee; word-wrap: break-word; }
-        .uploaded { color: green; }
-        .error { color: red; background: #ffe6e6; border-left-color: #ff0000; }
+        .button.success { background: #28a745; }
+        .button.danger { background: #dc3545; }
+        .status { margin: 15px 0; padding: 15px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #007cba; word-wrap: break-word; }
+        .progress { margin: 10px 0; font-weight: bold; color: #333; }
+        .stats { display: flex; gap: 20px; margin: 15px 0; }
+        .stat { flex: 1; text-align: center; padding: 10px; background: #e9ecef; border-radius: 6px; }
+        .file-list { max-height: 400px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 6px; }
+        .file-item { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: between; align-items: center; }
+        .file-item:last-child { border-bottom: none; }
+        .file-name { font-weight: bold; flex: 1; margin-right: 10px; word-break: break-word; }
+        .file-meta { font-size: 12px; color: #666; }
+        .uploaded { color: #28a745; }
+        .error { color: #dc3545; background: #f8d7da; border-left-color: #dc3545; }
+        .success { color: #155724; background: #d4edda; border-left-color: #28a745; }
+        .monitoring-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .interval-input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; width: 100px; }
     </style>
 </head>
 <body>
-    <h1>Telegram Video Manager</h1>
-    
-    <div class="section">
-        <h2>Download from Telegram</h2>
-        <button id="downloadBtn" class="button" onclick="startDownload()">Start Download</button>
-        <div id="downloadStatus" class="status">Ready to download</div>
-        <div id="downloadProgress" class="progress"></div>
+    <div class="header">
+        <h1>Telegram to Google Drive</h1>
+        <span class="badge">Direct Upload - No Local Storage</span>
+        <p>Downloads videos from Telegram and uploads directly to Google Drive</p>
     </div>
     
     <div class="section">
-        <h2>Upload to Google Drive</h2>
-        <button id="uploadBtn" class="button" onclick="startUpload()">Start Upload</button>
-        <div id="uploadStatus" class="status">Ready to upload</div>
-        <div id="uploadProgress" class="progress"></div>
+        <h2>Process Control</h2>
+        <button id="processBtn" class="button" onclick="startProcess()">Start Processing</button>
+        <div id="processStatus" class="status">Ready to start processing videos</div>
+        <div id="processProgress" class="progress"></div>
+        
+        <div class="stats">
+            <div class="stat">
+                <div>Current</div>
+                <div id="currentStat">0</div>
+            </div>
+            <div class="stat">
+                <div>Total Found</div>
+                <div id="totalStat">0</div>
+            </div>
+            <div class="stat">
+                <div>Completed</div>
+                <div id="completedStat">0</div>
+            </div>
+        </div>
     </div>
     
     <div class="section">
-        <h2>Video Files</h2>
-        <button class="button" onclick="loadFiles()">Refresh Files</button>
-        <div id="fileList" class="file-list"></div>
+        <h2>Auto Monitoring</h2>
+        <div class="monitoring-controls">
+            <input type="number" id="intervalInput" class="interval-input" value="30" min="5" max="1440" placeholder="Minutes">
+            <button id="startMonitoringBtn" class="button success" onclick="startMonitoring()">Start Monitoring</button>
+            <button id="stopMonitoringBtn" class="button danger" onclick="stopMonitoring()" disabled>Stop Monitoring</button>
+        </div>
+        <div id="monitoringStatus" class="status">Monitoring is stopped</div>
+    </div>
+    
+    <div class="section">
+        <h2>Uploaded Files</h2>
+        <button class="button" onclick="loadUploadedFiles()">Refresh List</button>
+        <div id="fileList" class="file-list">
+            <div style="padding: 20px; text-align: center; color: #666;">Click "Refresh List" to load uploaded files</div>
+        </div>
     </div>
 
     <script>
-        function updateElementClass(elementId, text, isError = false) {
+        let statusUpdateInterval = null;
+        let monitoringUpdateInterval = null;
+
+        function updateElementClass(elementId, text, className = '') {
             const element = document.getElementById(elementId);
             element.textContent = text;
-            if (isError) {
-                element.classList.add('error');
-            } else {
-                element.classList.remove('error');
+            element.className = element.className.replace(/\b(error|success)\b/g, '');
+            if (className) {
+                element.classList.add(className);
             }
         }
 
-        function startDownload() {
-            fetch('/download', { method: 'POST' })
+        function startProcess() {
+            fetch('/start-process', { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'started') {
-                        document.getElementById('downloadBtn').disabled = true;
-                        updateDownloadStatus();
+                        document.getElementById('processBtn').disabled = true;
+                        document.getElementById('processBtn').textContent = 'Processing...';
+                        startStatusUpdates();
                     } else if (data.status === 'error') {
-                        updateElementClass('downloadStatus', `Error: ${data.message}`, true);
+                        updateElementClass('processStatus', `Error: ${data.message}`, 'error');
+                    } else if (data.status === 'already_running') {
+                        updateElementClass('processStatus', 'Process is already running', 'error');
                     }
                 })
-                .catch(err => updateElementClass('downloadStatus', `Error: ${err.message}`, true));
+                .catch(err => updateElementClass('processStatus', `Error: ${err.message}`, 'error'));
         }
 
-        function startUpload() {
-            fetch('/upload', { method: 'POST' })
+        function startStatusUpdates() {
+            if (statusUpdateInterval) clearInterval(statusUpdateInterval);
+            
+            statusUpdateInterval = setInterval(() => {
+                fetch('/process_status')
+                    .then(r => r.json())
+                    .then(data => {
+                        const isError = data.progress && (data.progress.includes('Error') || data.progress.includes('Failed'));
+                        const isSuccess = data.progress && data.progress.includes('Completed!');
+                        
+                        let className = '';
+                        if (isError) className = 'error';
+                        else if (isSuccess) className = 'success';
+                        
+                        updateElementClass('processStatus', data.progress, className);
+                        
+                        // Update stats
+                        document.getElementById('currentStat').textContent = data.current || 0;
+                        document.getElementById('totalStat').textContent = data.total_videos || 0;
+                        document.getElementById('completedStat').textContent = data.completed || 0;
+                        
+                        // Update progress
+                        if (data.total_videos > 0) {
+                            document.getElementById('processProgress').textContent = 
+                                `Progress: ${data.current || 0}/${data.total_videos} (${data.completed || 0} completed)`;
+                        }
+                        
+                        // Re-enable button when done
+                        if (!data.running) {
+                            document.getElementById('processBtn').disabled = false;
+                            document.getElementById('processBtn').textContent = 'Start Processing';
+                            clearInterval(statusUpdateInterval);
+                            loadUploadedFiles(); // Refresh file list
+                        }
+                    })
+                    .catch(err => {
+                        updateElementClass('processStatus', `Status update error: ${err.message}`, 'error');
+                    });
+            }, 3000); // Update every 3 seconds
+        }
+
+        function startMonitoring() {
+            const interval = parseInt(document.getElementById('intervalInput').value) || 30;
+            
+            fetch('/api/start-monitoring', { 
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ interval: interval })
+            })
                 .then(r => r.json())
                 .then(data => {
                     if (data.status === 'started') {
-                        document.getElementById('uploadBtn').disabled = true;
-                        updateUploadStatus();
+                        document.getElementById('startMonitoringBtn').disabled = true;
+                        document.getElementById('stopMonitoringBtn').disabled = false;
+                        updateElementClass('monitoringStatus', `Monitoring started - checking every ${interval} minutes`, 'success');
+                        startMonitoringUpdates();
                     } else if (data.status === 'error') {
-                        updateElementClass('uploadStatus', `Error: ${data.message}`, true);
+                        updateElementClass('monitoringStatus', `Error: ${data.message}`, 'error');
                     }
                 })
-                .catch(err => updateElementClass('uploadStatus', `Error: ${err.message}`, true));
+                .catch(err => updateElementClass('monitoringStatus', `Error: ${err.message}`, 'error'));
         }
 
-        function updateDownloadStatus() {
-            fetch('/download_status')
+        function stopMonitoring() {
+            fetch('/api/stop-monitoring', { method: 'POST' })
                 .then(r => r.json())
                 .then(data => {
-                    const isError = data.progress && data.progress.includes('Error');
-                    updateElementClass('downloadStatus', data.progress, isError);
-                    
-                    if (data.total_videos > 0) {
-                        document.getElementById('downloadProgress').textContent = 
-                            `Progress: ${data.current}/${data.total_videos} videos`;
-                    }
-                    
-                    if (data.running) {
-                        setTimeout(updateDownloadStatus, 2000);
-                    } else {
-                        document.getElementById('downloadBtn').disabled = false;
-                        loadFiles(); // Refresh file list when download completes
+                    document.getElementById('startMonitoringBtn').disabled = false;
+                    document.getElementById('stopMonitoringBtn').disabled = true;
+                    updateElementClass('monitoringStatus', 'Monitoring stopped');
+                    if (monitoringUpdateInterval) {
+                        clearInterval(monitoringUpdateInterval);
                     }
                 })
-                .catch(err => updateElementClass('downloadStatus', `Error: ${err.message}`, true));
+                .catch(err => updateElementClass('monitoringStatus', `Error: ${err.message}`, 'error'));
         }
 
-        function updateUploadStatus() {
-            fetch('/upload_status')
-                .then(r => r.json())
-                .then(data => {
-                    const isError = data.progress && data.progress.includes('Error');
-                    updateElementClass('uploadStatus', data.progress, isError);
-                    
-                    if (data.total_files > 0) {
-                        document.getElementById('uploadProgress').textContent = 
-                            `Progress: ${data.current}/${data.total_files} files`;
-                    }
-                    
-                    if (data.running) {
-                        setTimeout(updateUploadStatus, 2000);
-                    } else {
-                        document.getElementById('uploadBtn').disabled = false;
-                        loadFiles(); // Refresh file list when upload completes
-                    }
-                })
-                .catch(err => updateElementClass('uploadStatus', `Error: ${err.message}`, true));
+        function startMonitoringUpdates() {
+            if (monitoringUpdateInterval) clearInterval(monitoringUpdateInterval);
+            
+            monitoringUpdateInterval = setInterval(() => {
+                fetch('/api/status')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (!data.monitoring.running) {
+                            stopMonitoring();
+                            return;
+                        }
+                        
+                        const lastRun = data.monitoring.last_run ? 
+                            new Date(data.monitoring.last_run).toLocaleString() : 'Never';
+                        updateElementClass('monitoringStatus', 
+                            `Monitoring active - Interval: ${data.monitoring.interval}min, Last run: ${lastRun}`, 
+                            'success');
+                    })
+                    .catch(err => console.error('Monitoring status error:', err));
+            }, 10000); // Update every 10 seconds
         }
 
-        function loadFiles() {
-            fetch('/files')
+        function loadUploadedFiles() {
+            fetch('/uploaded-files')
                 .then(r => r.json())
                 .then(files => {
                     if (files.error) {
-                        document.getElementById('fileList').innerHTML = `<div class="error">Error: ${files.error}</div>`;
+                        document.getElementById('fileList').innerHTML = `<div class="error" style="padding: 20px;">Error: ${files.error}</div>`;
+                        return;
+                    }
+                    
+                    if (files.length === 0) {
+                        document.getElementById('fileList').innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">No files uploaded yet</div>';
                         return;
                     }
                     
                     const fileList = document.getElementById('fileList');
-                    if (files.length === 0) {
-                        fileList.innerHTML = '<div>No video files found</div>';
-                        return;
-                    }
-                    
                     fileList.innerHTML = files.map(file => 
                         `<div class="file-item">
-                            <strong>${file.name}</strong> (${file.size})
-                            ${file.uploaded ? '<span class="uploaded">✓ Uploaded</span>' : ''}
+                            <div class="file-name">${file.name}</div>
+                            <div class="file-meta">
+                                ${file.size} • ${new Date(file.uploaded_at).toLocaleString()}
+                                <br><span class="uploaded">✓ Uploaded to Drive</span>
+                            </div>
                         </div>`
                     ).join('');
                 })
                 .catch(err => {
-                    document.getElementById('fileList').innerHTML = `<div class="error">Error loading files: ${err.message}</div>`;
+                    document.getElementById('fileList').innerHTML = `<div class="error" style="padding: 20px;">Error loading files: ${err.message}</div>`;
                 });
         }
 
-        // Load files on page load
-        loadFiles();
-        
-        // Auto-refresh status every 30 seconds
-        setInterval(() => {
-            if (document.getElementById('downloadBtn').disabled) {
-                updateDownloadStatus();
-            }
-            if (document.getElementById('uploadBtn').disabled) {
-                updateUploadStatus();
-            }
-        }, 30000);
+        // Initialize page
+        document.addEventListener('DOMContentLoaded', function() {
+            loadUploadedFiles();
+            
+            // Check if anything is currently running
+            fetch('/process_status')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.running) {
+                        document.getElementById('processBtn').disabled = true;
+                        document.getElementById('processBtn').textContent = 'Processing...';
+                        startStatusUpdates();
+                    }
+                })
+                .catch(err => console.error('Initial status check failed:', err));
+                
+            // Check monitoring status
+            fetch('/api/status')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.monitoring && data.monitoring.running) {
+                        document.getElementById('startMonitoringBtn').disabled = true;
+                        document.getElementById('stopMonitoringBtn').disabled = false;
+                        startMonitoringUpdates();
+                    }
+                })
+                .catch(err => console.error('Initial monitoring check failed:', err));
+        });
     </script>
 </body>
 </html>
 '''
 
 if __name__ == '__main__':
-    # Create necessary directories
-    if not os.path.exists(VIDEOS_FOLDER):
-        os.makedirs(VIDEOS_FOLDER)
-    
     # Get port from environment variable (required for Render)
     port = int(os.environ.get('PORT', 5000))
     
