@@ -15,18 +15,11 @@ app = Flask(__name__)
 # ============================================================================
 # COMPREHENSIVE CORS CONFIGURATION
 # ============================================================================
+
+
 CORS(app, 
      # Allow specific origins (adjust based on your deployment)
-     origins=[
-         "http://localhost:3000",           # React default
-         "http://localhost:5173",           # Vite default
-         "http://127.0.0.1:3000",
-         "http://127.0.0.1:5173",
-         "https://localhost:3000",          # HTTPS local
-         "https://localhost:5173",          # HTTPS local
-         "https://your-frontend-domain.com", # Add your actual frontend domain
-         # Add more origins as needed for production
-     ],
+      origins="*",
      # Allow all common HTTP methods
      methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD', 'PATCH'],
      # Allow all common headers
