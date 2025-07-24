@@ -12,7 +12,7 @@ import json
 app = Flask(__name__)
 
 # Simple CORS configuration
-CORS(app, origins=["http://localhost:3000","https://teletodrivefronend.vercel.app/", "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"])
+CORS(app, origins=[ "http://localhost:5173", "http://127.0.0.1:3000", "http://127.0.0.1:5173"])
 
 # Enhanced global variables to track process status
 process_status = {
