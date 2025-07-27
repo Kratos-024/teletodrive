@@ -51,69 +51,58 @@ def update_global_progress(operation, file_name=None, progress=0, file_size=0, d
     print(f"📊 Progress updated: {operation} - {progress:.1f}%")
 
 
+class ChunkCollector:
+    """Collects chunks and provides them as a file-like object"""
+    def __init__(self):
+        self.chunks = []
+        self.current_pos = 0
+        self.total_size = 0
+        self.finished = False
+    
+    def write(self, data):
+        """Write method for Telethon download_media"""
+        if data:
+            self.chunks.append(data)
+            self.total_size += len(data)
+        return len(data) if data else 0
+    
+    def get_data(self):
+        """Get all collected data as bytes"""
+        return b''.join(self.chunks)
+    
+    def get_stream(self):
+        """Get data as BytesIO stream"""
+        return io.BytesIO(self.get_data())
+
+
 class StreamingBuffer:
     """A streaming buffer that acts like a file object for Google Drive upload"""
-    def __init__(self, chunk_queue, total_size):
-        self.chunk_queue = chunk_queue
-        self.total_size = total_size
+    def __init__(self, data_bytes):
+        self.data = data_bytes
         self.position = 0
-        self.buffer = b''
-        self.finished = False
-        self._all_data = b''  # Store all data for seeking
+        self.size = len(data_bytes)
     
     def read(self, size=-1):
         """Read data from the buffer"""
-        # First, ensure we have all available data
-        self._fill_buffer()
-        
         if size == -1:
             # Read all remaining data
-            result = self._all_data[self.position:]
-            self.position = len(self._all_data)
+            result = self.data[self.position:]
+            self.position = self.size
             return result
         else:
             # Read specific amount of data
-            result = self._all_data[self.position:self.position + size]
+            result = self.data[self.position:self.position + size]
             self.position += len(result)
             return result
     
-    def _fill_buffer(self):
-        """Fill the internal buffer with all available data"""
-        while not self.finished and not self.chunk_queue.empty():
-            try:
-                chunk = self.chunk_queue.get_nowait()
-                if chunk is None:  # End marker
-                    self.finished = True
-                    break
-                self._all_data += chunk
-            except queue.Empty:
-                break
-        
-        # If we're not finished, wait a bit for more data
-        if not self.finished:
-            try:
-                chunk = self.chunk_queue.get(timeout=0.1)
-                if chunk is None:
-                    self.finished = True
-                else:
-                    self._all_data += chunk
-            except queue.Empty:
-                pass
-    
     def seek(self, position, whence=0):
-        """Seek to position with proper whence support"""
-        # Ensure we have all data first
-        while not self.finished:
-            self._fill_buffer()
-            if not self.finished and self.chunk_queue.empty():
-                time.sleep(0.01)  # Small delay to allow more data
-        
+        """Seek to position with proper whence support"""        
         if whence == 0:  # os.SEEK_SET
-            self.position = max(0, min(position, len(self._all_data)))
+            self.position = max(0, min(position, self.size))
         elif whence == 1:  # os.SEEK_CUR
-            self.position = max(0, min(self.position + position, len(self._all_data)))
+            self.position = max(0, min(self.position + position, self.size))
         elif whence == 2:  # os.SEEK_END
-            self.position = max(0, len(self._all_data) + position)
+            self.position = max(0, self.size + position)
         
         return self.position
     
@@ -139,23 +128,21 @@ class StreamingBuffer:
 
 
 async def chunked_download_and_upload(message, filename, drive_uploader, file_size):
-    """Download file in chunks and upload simultaneously"""
+    """Download file in chunks and upload to drive"""
     print(f"🔄 Starting chunked download and upload for: {filename}")
     
-    # Create a queue for chunks
-    chunk_queue = queue.Queue(maxsize=10)  # Increased queue size
-    
-    # Create streaming buffer for upload
-    stream_buffer = StreamingBuffer(chunk_queue, file_size)
-    
-    download_progress = {'bytes_downloaded': 0, 'start_time': time.time()}
+    download_result = {'success': False, 'error': None, 'data': None}
     upload_result = {'success': False, 'error': None}
-    download_result = {'success': False, 'error': None}
     
-    async def download_chunks():
-        """Download file in chunks and put them in queue"""
+    async def download_file():
+        """Download file completely first"""
         try:
-            print("⬇️ Starting chunked download from Telegram...")
+            print("⬇️ Starting download from Telegram...")
+            
+            # Create chunk collector
+            chunk_collector = ChunkCollector()
+            
+            download_progress = {'bytes_downloaded': 0, 'start_time': time.time()}
             
             async def progress_callback_download(current, total):
                 download_progress['bytes_downloaded'] = current
@@ -169,41 +156,32 @@ async def chunked_download_and_upload(message, filename, drive_uploader, file_si
                 print(f'\rDownload Progress: {percent:.1f}% {current/1024/1024:.1f}/{total/1024/1024:.1f} MB ({speed:.1f} MB/s)', end='', flush=True)
                 update_global_progress('downloading', filename, percent, total, current, speed)
             
-            # Custom chunk handler
-            def chunk_handler(data):
-                if data:
-                    chunk_queue.put(data)
-                    return len(data)
-                return 0
-            
-            # Download with custom chunk handler
+            # Download to chunk collector
             await client.download_media(
                 message, 
-                file=chunk_handler,
+                file=chunk_collector,
                 progress_callback=progress_callback_download
             )
             
-            # Signal end of download
-            chunk_queue.put(None)
             print(f"\n✅ Download completed for: {filename}")
             download_result['success'] = True
+            download_result['data'] = chunk_collector.get_data()
             
         except Exception as e:
             print(f"\n❌ Download error: {e}")
-            chunk_queue.put(None)  # Signal error/end
             download_result['error'] = str(e)
             raise
     
-    def upload_stream():
-        """Upload the stream to Google Drive"""
+    def upload_file(data_bytes):
+        """Upload the downloaded data to Google Drive"""
         try:
             print("⬆️ Starting upload to Google Drive...")
             update_global_progress('uploading', filename)
             
-            # Wait a bit for some data to be available
-            time.sleep(1)
+            # Create streaming buffer from downloaded data
+            stream_buffer = StreamingBuffer(data_bytes)
             
-            result = drive_uploader.upload_file_stream(stream_buffer, filename, file_size)
+            result = drive_uploader.upload_file_stream(stream_buffer, filename, len(data_bytes))
             upload_result['success'] = True
             return result
         except Exception as e:
@@ -211,24 +189,26 @@ async def chunked_download_and_upload(message, filename, drive_uploader, file_si
             upload_result['error'] = str(e)
             raise
     
-    # Start download task
-    download_task = asyncio.create_task(download_chunks())
-    
-    # Start upload in a separate thread (since Google API is synchronous)
-    upload_thread = Thread(target=upload_stream)
-    upload_thread.start()
-    
-    # Wait for both to complete
     try:
-        await download_task
-        upload_thread.join()
+        # First, download the file completely
+        await download_file()
         
-        if upload_result['success'] and download_result['success']:
-            print(f"✅ Successfully processed: {filename}")
-            return True
+        if download_result['success'] and download_result['data']:
+            # Then upload the downloaded data
+            upload_thread = Thread(target=lambda: upload_file(download_result['data']))
+            upload_thread.start()
+            upload_thread.join()
+            
+            if upload_result['success']:
+                print(f"✅ Successfully processed: {filename}")
+                return True
+            else:
+                error_msg = upload_result.get('error', 'Upload failed')
+                print(f"❌ Upload failed for {filename}: {error_msg}")
+                return False
         else:
-            error_msg = upload_result.get('error') or download_result.get('error') or 'Unknown error'
-            print(f"❌ Error processing {filename}: {error_msg}")
+            error_msg = download_result.get('error', 'Download failed')
+            print(f"❌ Download failed for {filename}: {error_msg}")
             return False
             
     except Exception as e:
@@ -325,7 +305,7 @@ async def main():
             print("⚠️ No video messages found!")
             return
         
-        # Process videos with chunked download/upload
+        # Process videos with download then upload approach
         for i, message in enumerate(video_messages, 1):
             title = get_video_title(message)
             filename = f"{title}.mp4"
@@ -342,7 +322,7 @@ async def main():
             print(f"📝 Title: {title}")
             
             try:
-                # Process with chunked download and upload
+                # Process with download then upload
                 success = await chunked_download_and_upload(message, filename, drive_uploader, file_size)
                 
                 if success:
