@@ -8,10 +8,56 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.errors import HttpError
+from threading import Thread
+import queue
+
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 GDRIVE_FOLDER_NAME = 'Telegram Videos'
 UPLOADED_TRACKER = 'uploaded_videos.json'
+CHUNK_SIZE = 1024 * 1024  # 1MB chunks
+
+
+class ChunkedMediaUpload(MediaIoBaseUpload):
+    """Custom media upload class that works with chunked data"""
+    def __init__(self, chunk_queue, total_size, mimetype='video/mp4', chunksize=256*1024, resumable=True):
+        self._chunk_queue = chunk_queue
+        self._total_size = total_size
+        self._bytes_read = 0
+        self._mimetype = mimetype
+        self._chunksize = chunksize
+        self._resumable = resumable
+        self._buffer = io.BytesIO()
+        
+    def size(self):
+        return self._total_size
+    
+    def mimetype(self):
+        return self._mimetype
+    
+    def resumable(self):
+        return self._resumable
+    
+    def getbytes(self, begin, length):
+        """Get bytes from the buffered chunks"""
+        # Ensure we have enough data in buffer
+        while self._buffer.tell() < begin + length and not self._chunk_queue.empty():
+            try:
+                chunk = self._chunk_queue.get_nowait()
+                if chunk is None:  # End marker
+                    break
+                self._buffer.write(chunk)
+            except queue.Empty:
+                break
+        
+        # Seek to the requested position
+        self._buffer.seek(begin)
+        data = self._buffer.read(length)
+        return data
+    
+    def has_data(self):
+        return not self._chunk_queue.empty() or self._buffer.tell() > 0
+
 
 class DriveUploader:
     def __init__(self, progress_callback=None):
@@ -147,19 +193,77 @@ class DriveUploader:
         """Check if a file has already been uploaded"""
         return filename in self.uploaded
     
-    def upload_file(self, file_path, filename):
-        """Upload a single file to Google Drive with progress tracking"""
+    def upload_chunked_file(self, chunk_queue, filename, total_size):
+        """Upload a file using chunked data from queue"""
         try:
             final_filename = self._get_unique_filename(filename)
-            file_size = os.path.getsize(file_path)
+            
+            print(f"📤 Uploading: {final_filename} ({total_size / 1024 / 1024:.1f} MB)")
+            
+            # Create custom media upload with chunk queue
+            media = ChunkedMediaUpload(
+                chunk_queue=chunk_queue,
+                total_size=total_size,
+                mimetype='video/mp4',
+                chunksize=CHUNK_SIZE,
+                resumable=True
+            )
+            
+            file_metadata = {
+                'name': final_filename,
+                'parents': [self.folder_id]
+            }
+            
+            request = self.service.files().create(
+                body=file_metadata,
+                media_body=media
+            )
+            
+            response = None
+            start_time = time.time()
+            
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    progress = int(status.progress() * 100)
+                    elapsed_time = time.time() - start_time
+                    
+                    if elapsed_time > 0:
+                        upload_speed = (status.resumable_progress / elapsed_time) / 1024 / 1024  # MB/s
+                    else:
+                        upload_speed = 0
+                    
+                    print(f"\rUpload Progress: {progress}% ({upload_speed:.1f} MB/s)", end='', flush=True)
+                    
+                    # Call progress callback if provided
+                    if self.progress_callback:
+                        self.progress_callback('uploading', final_filename, progress, total_size, status.resumable_progress, upload_speed)
+            
+            # Save to tracker
+            self.uploaded[filename] = {
+                'drive_id': response.get('id'),
+                'drive_name': final_filename,
+                'upload_date': time.time(),
+                'file_size': total_size
+            }
+            self.save_tracker()
+            
+            print(f"\n✅ Upload completed: {final_filename}")
+            return response.get('id')
+            
+        except Exception as e:
+            print(f"\n❌ Upload failed: {e}")
+            raise
+    
+    def upload_file_stream(self, file_stream, filename, file_size):
+        """Upload a file from a stream object"""
+        try:
+            final_filename = self._get_unique_filename(filename)
             
             print(f"📤 Uploading: {final_filename} ({file_size / 1024 / 1024:.1f} MB)")
             
-            with open(file_path, 'rb') as file:
-                file_content = file.read()
-            
             media = MediaIoBaseUpload(
-                io.BytesIO(file_content),
+                file_stream,
                 mimetype='video/mp4',
                 resumable=True
             )

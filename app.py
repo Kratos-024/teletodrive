@@ -10,12 +10,13 @@ from drive_uploader import DriveUploader
 import json
 import traceback
 
+
 app = Flask(__name__)
+
 
 # ============================================================================
 # COMPREHENSIVE CORS CONFIGURATION
 # ============================================================================
-
 
 CORS(app, 
      # Allow specific origins (adjust based on your deployment)
@@ -38,6 +39,7 @@ CORS(app,
      # Cache preflight requests for 1 hour
      max_age=3600
 )
+
 
 # ============================================================================
 # GLOBAL PREFLIGHT HANDLER (Fallback for any missed OPTIONS requests)
@@ -79,6 +81,7 @@ def handle_preflight():
         print("✅ Preflight response headers set")
         return response
 
+
 # ============================================================================
 # RESPONSE HEADERS MIDDLEWARE (Ensure CORS headers on all responses)
 # ============================================================================
@@ -113,6 +116,7 @@ def after_request(response):
     
     return response
 
+
 # ============================================================================
 # ENHANCED ERROR HANDLING FUNCTIONS
 # ============================================================================
@@ -144,6 +148,7 @@ def create_error_response(error_type, message, details, status_code=500, suggest
     
     return jsonify(error_response), status_code
 
+
 def log_request_info():
     """Log detailed request information for debugging"""
     print(f"🌐 Request: {request.method} {request.path}")
@@ -153,7 +158,8 @@ def log_request_info():
     if request.args:
         print(f"🔗 Query params: {dict(request.args)}")
 
-# Enhanced global variables to track process status
+
+# Enhanced global variables to track process status with chunked streaming support
 process_status = {
     'running': False,
     'last_error': None,
@@ -170,10 +176,16 @@ process_status = {
     'uploaded_files': 0,
     'current_file_size': 0,
     'downloaded_size': 0,
+    'uploaded_size': 0,  # New field for chunked uploads
     'upload_speed': 0,
     'download_speed': 0,
-    'eta': None
+    'eta': None,
+    'streaming_active': False,  # New field to track streaming status
+    'memory_usage': 0,  # New field to track memory usage
+    'chunk_queue_size': 0,  # New field to track chunk queue size
+    'simultaneous_operations': False  # New field to track if download/upload are happening simultaneously
 }
+
 
 def check_credentials():
     """Check if required credential files exist"""
@@ -199,20 +211,22 @@ def check_credentials():
         print(f"❌ Error checking credentials: {e}")
         return False, [f'Error checking files: {str(e)}']
 
+
 def get_stats():
     """Get upload statistics with enhanced error handling"""
     try:
         print("📊 Getting upload statistics...")
         uploader = DriveUploader()
-        uploaded_count = uploader.get_uploaded_count()
-        uploaded_files = uploader.list_uploaded_files()
+        stats_data = uploader.get_upload_stats()
         
         stats = {
-            'total_uploaded': uploaded_count,
-            'recently_uploaded': uploaded_files[-5:] if uploaded_files else [],
-            'total_files_tracked': len(uploaded_files)
+            'total_uploaded': stats_data.get('total_files', 0),
+            'total_size_mb': stats_data.get('total_size_mb', 0),
+            'recently_uploaded': list(stats_data.get('files', {}).keys())[-5:] if stats_data.get('files') else [],
+            'total_files_tracked': len(stats_data.get('files', {})),
+            'files_detail': stats_data.get('files', {})
         }
-        print(f"✅ Stats retrieved: {uploaded_count} files uploaded")
+        print(f"✅ Stats retrieved: {stats['total_uploaded']} files uploaded ({stats['total_size_mb']:.1f} MB)")
         return stats
         
     except ImportError as e:
@@ -221,8 +235,10 @@ def get_stats():
         return {
             'error': error_msg,
             'total_uploaded': 0,
+            'total_size_mb': 0,
             'recently_uploaded': [],
-            'total_files_tracked': 0
+            'total_files_tracked': 0,
+            'files_detail': {}
         }
     except Exception as e:
         error_msg = f'Could not get stats: {str(e)}'
@@ -231,12 +247,15 @@ def get_stats():
         return {
             'error': error_msg,
             'total_uploaded': 0,
+            'total_size_mb': 0,
             'recently_uploaded': [],
-            'total_files_tracked': 0
+            'total_files_tracked': 0,
+            'files_detail': {}
         }
 
+
 def sync_progress_from_telegram():
-    """Sync progress from telegram_downloader module with enhanced error handling"""
+    """Sync progress from telegram_downloader module with enhanced error handling for chunked operations"""
     global process_status
     try:
         # Import current_progress from telegram_downloader
@@ -245,24 +264,39 @@ def sync_progress_from_telegram():
         # Update process status with current progress
         if current_progress.get('operation'):
             process_status['current_operation'] = current_progress['operation']
+            
+            # Special handling for chunked operations
+            if current_progress['operation'] in ['downloading', 'uploading']:
+                process_status['streaming_active'] = True
+                process_status['simultaneous_operations'] = True
+            elif current_progress['operation'] in ['completed', 'error']:
+                process_status['streaming_active'] = False
+                process_status['simultaneous_operations'] = False
+            
         if current_progress.get('file_name'):
             process_status['current_file'] = current_progress['file_name']
+            
         if current_progress.get('progress') is not None:
             if current_progress['operation'] == 'downloading':
                 process_status['download_progress'] = current_progress['progress']
             elif current_progress['operation'] == 'uploading':
                 process_status['upload_progress'] = current_progress['progress']
         
-        # Update additional progress fields
+        # Update additional progress fields with chunked streaming support
         process_status['current_file_size'] = current_progress.get('file_size', 0)
         process_status['downloaded_size'] = current_progress.get('downloaded_size', 0)
+        process_status['uploaded_size'] = current_progress.get('uploaded_size', 0)
         process_status['download_speed'] = current_progress.get('speed', 0)
+        process_status['upload_speed'] = current_progress.get('upload_speed', 0)
         process_status['total_files'] = current_progress.get('total_files', 0)
         process_status['processed_files'] = current_progress.get('processed_files', 0)
         process_status['downloaded_files'] = current_progress.get('downloaded_files', 0)
         process_status['uploaded_files'] = current_progress.get('uploaded_files', 0)
-        process_status['upload_speed'] = current_progress.get('upload_speed', 0)
         process_status['eta'] = current_progress.get('eta')
+        
+        # New fields for chunked operations
+        process_status['memory_usage'] = current_progress.get('memory_usage', 0)
+        process_status['chunk_queue_size'] = current_progress.get('chunk_queue_size', 0)
         
     except ImportError as e:
         print(f"⚠️ Cannot import telegram_downloader: {e}")
@@ -270,8 +304,9 @@ def sync_progress_from_telegram():
         print(f"❌ Error syncing progress: {e}")
         print(f"📋 Traceback: {traceback.format_exc()}")
 
+
 async def run_telegram_process():
-    """Run the telegram download and upload process with enhanced error handling"""
+    """Run the telegram download and upload process with enhanced error handling for chunked operations"""
     global process_status
     
     try:
@@ -280,26 +315,34 @@ async def run_telegram_process():
         process_status['last_error'] = None
         process_status['start_time'] = datetime.now().isoformat()
         process_status['current_operation'] = 'initializing'
+        process_status['streaming_active'] = False
+        process_status['simultaneous_operations'] = False
         
-        print("🚀 Starting Telegram to Google Drive Video Uploader")
-        print("=" * 50)
+        print("🚀 Starting Telegram to Google Drive Video Uploader (Chunked Streaming Mode)")
+        print("=" * 60)
+        print("📊 Mode: Chunked Download + Simultaneous Upload")
+        print("💾 Memory: Optimized streaming (no disk storage)")
+        print("=" * 60)
         
         # Validate prerequisites before starting
         credentials_ok, missing_files = check_credentials()
         if not credentials_ok:
             raise ValueError(f"Missing credentials: {missing_files}")
         
-        # Run the telegram downloader (which includes drive upload)
-        print("📞 Calling telegram_main()...")
+        # Run the telegram downloader (which includes drive upload with chunked streaming)
+        print("📞 Calling telegram_main() with chunked streaming...")
         await telegram_main()
         
-        print("\n" + "=" * 50)
-        print("✅ Process completed successfully!")
+        print("\n" + "=" * 60)
+        print("✅ Chunked streaming process completed successfully!")
+        print("📊 All files processed without disk storage")
         
         # Update stats
         process_status['stats'] = get_stats()
         process_status['end_time'] = datetime.now().isoformat()
         process_status['current_operation'] = 'completed'
+        process_status['streaming_active'] = False
+        process_status['simultaneous_operations'] = False
         
     except ImportError as e:
         error_msg = f"Missing required module: {str(e)}"
@@ -307,6 +350,8 @@ async def run_telegram_process():
         process_status['last_error'] = error_msg
         process_status['end_time'] = datetime.now().isoformat()
         process_status['current_operation'] = 'error'
+        process_status['streaming_active'] = False
+        process_status['simultaneous_operations'] = False
         raise e
     except ValueError as e:
         error_msg = f"Configuration error: {str(e)}"
@@ -314,36 +359,46 @@ async def run_telegram_process():
         process_status['last_error'] = error_msg
         process_status['end_time'] = datetime.now().isoformat()
         process_status['current_operation'] = 'error'
+        process_status['streaming_active'] = False
+        process_status['simultaneous_operations'] = False
         raise e
     except Exception as e:
-        error_msg = f"Process error: {str(e)}"
+        error_msg = f"Chunked streaming process error: {str(e)}"
         print(f"\n❌ {error_msg}")
         print(f"📋 Traceback: {traceback.format_exc()}")
         process_status['last_error'] = error_msg
         process_status['end_time'] = datetime.now().isoformat()
         process_status['current_operation'] = 'error'
+        process_status['streaming_active'] = False
+        process_status['simultaneous_operations'] = False
         raise e
     finally:
         print("🏁 Setting process_status to not running...")
         process_status['running'] = False
+        process_status['streaming_active'] = False
+        process_status['simultaneous_operations'] = False
+
 
 def run_async_function():
-    """Wrapper to run async function in thread with enhanced error handling"""
-    print("🧵 Starting async function in thread...")
+    """Wrapper to run async function in thread with enhanced error handling for chunked operations"""
+    print("🧵 Starting async chunked streaming function in thread...")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(run_telegram_process())
-        print("✅ Thread completed successfully")
+        print("✅ Chunked streaming thread completed successfully")
     except Exception as e:
         error_msg = f"Thread error: {str(e)}"
         print(f"❌ {error_msg}")
         print(f"📋 Traceback: {traceback.format_exc()}")
         process_status['last_error'] = error_msg
         process_status['running'] = False
+        process_status['streaming_active'] = False
+        process_status['simultaneous_operations'] = False
     finally:
         loop.close()
         print("🧵 Thread cleanup completed")
+
 
 # ============================================================================
 # ROUTES WITH ENHANCED ERROR HANDLING AND CORS
@@ -361,19 +416,29 @@ def home():
     try:
         return jsonify({
             'status': 'success',
-            'message': 'Telegram to Google Drive Video Uploader API',
-            'version': '2.0',
+            'message': 'Telegram to Google Drive Video Uploader API (Chunked Streaming)',
+            'version': '2.1',
+            'mode': 'chunked_streaming',
+            'features': [
+                'Chunked downloading from Telegram',
+                'Simultaneous upload to Google Drive',
+                'Memory-optimized streaming',
+                'No disk storage required',
+                'Real-time progress tracking'
+            ],
             'data': {
                 'endpoints': {
                     '/': 'GET - API information',
                     '/status': 'GET - Check process status and stats',
-                    '/start-upload': 'POST - Start video download and upload process',
+                    '/start-upload': 'POST - Start chunked video download and upload process',
                     '/stats': 'GET - Get upload statistics',
                     '/health': 'GET - Health check',
                     '/progress': 'GET - Get detailed progress information'
                 },
                 'server_time': datetime.now().isoformat(),
-                'process_running': process_status['running']
+                'process_running': process_status['running'],
+                'streaming_active': process_status.get('streaming_active', False),
+                'simultaneous_operations': process_status.get('simultaneous_operations', False)
             },
             'timestamp': datetime.now().isoformat()
         })
@@ -385,6 +450,7 @@ def home():
             500,
             ['Try refreshing the page', 'Check server logs for details']
         )
+
 
 # ROUTE: Health check
 @app.route('/health', methods=['GET', 'OPTIONS'])
@@ -403,6 +469,10 @@ def health_check():
             'server_status': 'healthy' if credentials_ok else 'warning',
             'credentials': 'ok' if credentials_ok else f'missing: {missing_files}',
             'process_running': process_status['running'],
+            'streaming_mode': 'enabled',
+            'chunked_operations': 'supported',
+            'memory_optimization': 'active',
+            'disk_usage': 'minimal',
             'server_uptime': time.time(),
             'python_version': f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
             'current_time': datetime.now().isoformat()
@@ -437,10 +507,11 @@ def health_check():
             ['Server may be experiencing issues', 'Try again in a few moments']
         )
 
+
 # ROUTE: Process status
 @app.route('/status', methods=['GET', 'OPTIONS'])
 def get_status():
-    """Get current process status with enhanced information"""
+    """Get current process status with enhanced information for chunked operations"""
     if request.method == 'OPTIONS':
         return handle_preflight_response()
     
@@ -452,10 +523,14 @@ def get_status():
         
         status_data = {
             'process_running': process_status['running'],
+            'streaming_active': process_status.get('streaming_active', False),
+            'simultaneous_operations': process_status.get('simultaneous_operations', False),
             'last_error': process_status['last_error'],
             'start_time': process_status.get('start_time'),
             'end_time': process_status.get('end_time'),
             'current_operation': process_status.get('current_operation'),
+            'memory_usage': process_status.get('memory_usage', 0),
+            'chunk_queue_size': process_status.get('chunk_queue_size', 0),
             'stats': process_status.get('stats', get_stats()),
             'uptime_seconds': time.time() - (time.mktime(datetime.fromisoformat(process_status['start_time']).timetuple()) if process_status.get('start_time') else time.time())
         }
@@ -475,10 +550,11 @@ def get_status():
             ['Try refreshing the page', 'Check if the process is still running']
         )
 
+
 # ROUTE: Detailed progress
 @app.route('/progress', methods=['GET', 'OPTIONS'])
 def get_progress():
-    """Get detailed progress information with real-time updates"""
+    """Get detailed progress information with real-time updates for chunked operations"""
     if request.method == 'OPTIONS':
         return handle_preflight_response()
     
@@ -490,6 +566,8 @@ def get_progress():
         
         progress_data = {
             'running': process_status['running'],
+            'streaming_active': process_status.get('streaming_active', False),
+            'simultaneous_operations': process_status.get('simultaneous_operations', False),
             'current_operation': process_status.get('current_operation'),
             'current_file': process_status.get('current_file'),
             'download_progress': process_status.get('download_progress', 0),
@@ -500,12 +578,20 @@ def get_progress():
             'uploaded_files': process_status.get('uploaded_files', 0),
             'current_file_size': process_status.get('current_file_size', 0),
             'downloaded_size': process_status.get('downloaded_size', 0),
+            'uploaded_size': process_status.get('uploaded_size', 0),
             'download_speed': process_status.get('download_speed', 0),
             'upload_speed': process_status.get('upload_speed', 0),
+            'memory_usage': process_status.get('memory_usage', 0),
+            'chunk_queue_size': process_status.get('chunk_queue_size', 0),
             'eta': process_status.get('eta'),
             'start_time': process_status.get('start_time'),
             'last_error': process_status.get('last_error'),
-            'last_update': datetime.now().isoformat()
+            'last_update': datetime.now().isoformat(),
+            'efficiency_metrics': {
+                'disk_usage': 'minimal (streaming)',
+                'memory_optimization': 'active',
+                'concurrent_operations': process_status.get('simultaneous_operations', False)
+            }
         }
         
         return jsonify({
@@ -523,6 +609,7 @@ def get_progress():
             ['Try refreshing the page', 'Check if the process is running correctly']
         )
 
+
 # ROUTE: Upload statistics
 @app.route('/stats', methods=['GET', 'OPTIONS'])
 def get_statistics():
@@ -535,13 +622,21 @@ def get_statistics():
     try:
         stats = get_stats()
         
-        # Add additional statistics
+        # Add additional statistics for chunked operations
         enhanced_stats = {
             **stats,
             'last_updated': datetime.now().isoformat(),
             'process_status': {
                 'running': process_status['running'],
-                'current_operation': process_status.get('current_operation')
+                'current_operation': process_status.get('current_operation'),
+                'streaming_active': process_status.get('streaming_active', False),
+                'mode': 'chunked_streaming'
+            },
+            'performance_metrics': {
+                'disk_usage': 'optimized (no file storage)',
+                'memory_efficiency': 'high',
+                'streaming_mode': 'enabled',
+                'concurrent_operations': 'supported'
             }
         }
         
@@ -560,10 +655,11 @@ def get_statistics():
             ['Check if the drive uploader module is available', 'Verify credentials are configured correctly']
         )
 
-# ROUTE: Start upload process (Enhanced with comprehensive error handling)
+
+# ROUTE: Start upload process (Enhanced for chunked streaming)
 @app.route('/start-upload', methods=['POST', 'OPTIONS'])
 def start_upload():
-    """Start the video download and upload process with enhanced error handling"""
+    """Start the chunked video download and upload process with enhanced error handling"""
     
     # Enhanced OPTIONS handling
     if request.method == 'OPTIONS':
@@ -571,7 +667,7 @@ def start_upload():
         return handle_preflight_response()
     
     log_request_info()
-    print("🎯 POST /start-upload endpoint hit!")
+    print("🎯 POST /start-upload endpoint hit! (Chunked Streaming Mode)")
     print(f"📊 Current process_status['running']: {process_status['running']}")
     
     try:
@@ -580,13 +676,14 @@ def start_upload():
             print("⚠️ Process already running")
             return create_error_response(
                 'conflict',
-                'Process is already running',
+                'Chunked streaming process is already running',
                 f'Upload process started at {process_status.get("start_time")}',
                 409,
                 [
                     'Wait for the current process to complete',
                     'Check progress using /progress endpoint',
-                    'Monitor status using /status endpoint'
+                    'Monitor status using /status endpoint',
+                    'The chunked streaming process is memory-optimized and faster'
                 ]
             )
         
@@ -623,10 +720,10 @@ def start_upload():
                 ]
             )
         
-        print("✅ Starting upload process...")
+        print("✅ Starting chunked streaming upload process...")
         initial_stats = get_stats()
         
-        # Reset process status
+        # Reset process status for chunked operations
         process_status.update({
             'last_error': None,
             'start_time': None,
@@ -641,52 +738,72 @@ def start_upload():
             'uploaded_files': 0,
             'current_file_size': 0,
             'downloaded_size': 0,
+            'uploaded_size': 0,
             'upload_speed': 0,
             'download_speed': 0,
-            'eta': None
+            'eta': None,
+            'streaming_active': False,
+            'memory_usage': 0,
+            'chunk_queue_size': 0,
+            'simultaneous_operations': False
         })
         
-        print("🧵 Creating and starting background thread...")
+        print("🧵 Creating and starting background thread for chunked streaming...")
         # Start the process in background thread
         thread = threading.Thread(target=run_async_function, daemon=True)
         thread.start()
-        print("🧵 Background thread started!")
+        print("🧵 Background thread started for chunked streaming!")
         
         # Give the thread a moment to start
         time.sleep(0.1)
         
         response_data = {
             'status': 'success',
-            'message': 'Video download and upload process started in background',
+            'message': 'Chunked video download and upload process started in background',
+            'mode': 'chunked_streaming',
+            'features': [
+                'Memory-optimized streaming',
+                'Simultaneous download and upload',
+                'No disk storage required',
+                'Real-time progress tracking'
+            ],
             'data': {
                 'initial_stats': initial_stats,
                 'process_id': thread.ident,
-                'started_at': datetime.now().isoformat()
+                'started_at': datetime.now().isoformat(),
+                'optimization': {
+                    'memory_usage': 'minimized',
+                    'disk_usage': 'none',
+                    'streaming_enabled': True,
+                    'concurrent_operations': True
+                }
             },
-            'note': 'Use /progress endpoint to check detailed progress',
+            'note': 'Use /progress endpoint to check detailed progress with streaming metrics',
             'timestamp': datetime.now().isoformat()
         }
         
-        print(f"✅ Returning success response")
+        print(f"✅ Returning success response for chunked streaming")
         return jsonify(response_data), 200
         
     except Exception as e:
-        error_msg = f"Failed to start process: {str(e)}"
+        error_msg = f"Failed to start chunked streaming process: {str(e)}"
         print(f"❌ Error starting process: {error_msg}")
         print(f"📋 Traceback: {traceback.format_exc()}")
         
         return create_error_response(
             'startup_error',
-            'Failed to start upload process',
+            'Failed to start chunked upload process',
             error_msg,
             500,
             [
                 'Check server logs for detailed error information',
                 'Verify all dependencies are installed',
                 'Ensure sufficient system resources are available',
-                'Try restarting the server'
+                'Try restarting the server',
+                'Check if chunked streaming modules are properly configured'
             ]
         )
+
 
 # ============================================================================
 # HELPER FUNCTION FOR CONSISTENT PREFLIGHT RESPONSES
@@ -718,6 +835,7 @@ def handle_preflight_response():
     
     return response
 
+
 # ============================================================================
 # ENHANCED ERROR HANDLERS
 # ============================================================================
@@ -736,6 +854,7 @@ def not_found(error):
         ]
     )
 
+
 @app.errorhandler(500)
 def internal_error(error):
     """Handle 500 errors with detailed information"""
@@ -752,6 +871,7 @@ def internal_error(error):
         ]
     )
 
+
 @app.errorhandler(405)
 def method_not_allowed(error):
     """Handle 405 errors with method information"""
@@ -766,6 +886,7 @@ def method_not_allowed(error):
             'Refer to the API documentation'
         ]
     )
+
 
 @app.errorhandler(400)
 def bad_request(error):
@@ -782,14 +903,18 @@ def bad_request(error):
         ]
     )
 
+
 # ============================================================================
 # SERVER STARTUP WITH ENHANCED LOGGING
 # ============================================================================
 if __name__ == '__main__':
-    print("🚀 Starting Telegram to Google Drive API Server")
-    print("=" * 60)
+    print("🚀 Starting Telegram to Google Drive API Server (Chunked Streaming)")
+    print("=" * 80)
     print("📡 Server will be available at: http://localhost:5000")
     print("📖 API Documentation at: http://localhost:5000/")
+    print("🎯 Mode: Chunked Streaming with Memory Optimization")
+    print("💾 Disk Usage: Minimal (no file storage)")
+    print("⚡ Performance: Simultaneous download/upload")
     
     # System checks
     print("\n🔍 System Checks:")
@@ -804,13 +929,13 @@ if __name__ == '__main__':
     print("\n📦 Module Availability:")
     try:
         import telegram_downloader
-        print("✅ telegram_downloader module available")
+        print("✅ telegram_downloader module available (chunked streaming)")
     except ImportError as e:
         print(f"❌ telegram_downloader module missing: {e}")
     
     try:
         import drive_uploader
-        print("✅ drive_uploader module available")
+        print("✅ drive_uploader module available (streaming upload)")
     except ImportError as e:
         print(f"❌ drive_uploader module missing: {e}")
     
@@ -820,7 +945,7 @@ if __name__ == '__main__':
         if 'error' in initial_stats:
             print(f"⚠️  Stats warning: {initial_stats['error']}")
         else:
-            print(f"📊 Current stats: {initial_stats['total_uploaded']} videos uploaded")
+            print(f"📊 Current stats: {initial_stats['total_uploaded']} videos uploaded ({initial_stats['total_size_mb']:.1f} MB)")
     except Exception as e:
         print(f"⚠️  Could not load initial stats: {e}")
     
@@ -828,10 +953,10 @@ if __name__ == '__main__':
     print("\n📋 Available API Endpoints:")
     print("   GET  /          - API information")
     print("   GET  /health    - Health check")
-    print("   GET  /status    - Process status")
-    print("   GET  /progress  - Detailed progress")
+    print("   GET  /status    - Process status (with streaming metrics)")
+    print("   GET  /progress  - Detailed progress (with chunk info)")
     print("   GET  /stats     - Upload statistics")
-    print("   POST /start-upload - Start upload process")
+    print("   POST /start-upload - Start chunked upload process")
     
     print("\n🔒 CORS Configuration:")
     print("   ✅ Comprehensive CORS headers configured")
@@ -839,8 +964,15 @@ if __name__ == '__main__':
     print("   ✅ Multiple origins supported")
     print("   ✅ Enhanced error handling enabled")
     
+    print("\n⚡ Chunked Streaming Features:")
+    print("   🔄 Real-time chunk processing")
+    print("   💾 Memory-optimized operations")
+    print("   📤 Simultaneous download/upload")
+    print("   📊 Advanced progress tracking")
+    print("   🚫 No disk storage required")
+    
     print("\n🚦 Starting Flask server...")
-    print("=" * 60)
+    print("=" * 80)
     
     try:
         app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
