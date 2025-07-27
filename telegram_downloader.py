@@ -3,25 +3,21 @@ import os
 import re
 import time
 import io
-import queue
+import tempfile
 from threading import Thread
 from telethon import TelegramClient
 from telethon.tl.types import MessageMediaDocument, DocumentAttributeVideo
 from drive_uploader import DriveUploader
-
 
 # API credentials from https://my.telegram.org
 API_ID = 27395677
 API_HASH = 'b7ee4d7b5b578e5a2ebba4dd0ff84838'
 PHONE_NUMBER = '+918512094758'
 
-
 # Target channel
 TARGET_CHAT = 'campusxdsmp1_0'
 
-
 client = TelegramClient('session', API_ID, API_HASH)
-
 
 # Global progress tracking
 current_progress = {
@@ -33,9 +29,7 @@ current_progress = {
     'speed': 0
 }
 
-
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks
-
 
 def update_global_progress(operation, file_name=None, progress=0, file_size=0, downloaded_size=0, speed=0):
     """Update global progress that can be accessed by Flask"""
@@ -49,79 +43,6 @@ def update_global_progress(operation, file_name=None, progress=0, file_size=0, d
         'speed': speed
     })
     print(f"📊 Progress updated: {operation} - {progress:.1f}%")
-
-
-class ChunkCollector:
-    """Collects chunks and provides them as a file-like object"""
-    def __init__(self):
-        self.chunks = []
-        self.position = 0
-        self.total_size = 0
-        self.finished = False
-    
-    def write(self, data):
-        """Write method for Telethon download_media"""
-        if data:
-            self.chunks.append(data)
-            self.total_size += len(data)
-        return len(data) if data else 0
-    
-    def read(self, size=-1):
-        """Read method for file-like interface"""
-        data = self.get_data()
-        if size == -1:
-            result = data[self.position:]
-            self.position = len(data)
-        else:
-            result = data[self.position:self.position + size]
-            self.position += len(result)
-        return result
-    
-    def seek(self, position, whence=0):
-        """Seek method for file-like interface"""
-        data_len = len(self.get_data())
-        
-        if whence == 0:  # os.SEEK_SET
-            self.position = max(0, min(position, data_len))
-        elif whence == 1:  # os.SEEK_CUR
-            self.position = max(0, min(self.position + position, data_len))
-        elif whence == 2:  # os.SEEK_END
-            self.position = max(0, data_len + position)
-        
-        return self.position
-    
-    def tell(self):
-        """Tell method for file-like interface"""
-        return self.position
-    
-    def close(self):
-        """Close method for file-like interface"""
-        pass
-    
-    def flush(self):
-        """Flush method for file-like interface"""
-        pass
-    
-    def readable(self):
-        """Return whether object supports reading"""
-        return True
-    
-    def writable(self):
-        """Return whether object supports writing"""
-        return True
-    
-    def seekable(self):
-        """Return whether object supports seeking"""
-        return True
-    
-    def get_data(self):
-        """Get all collected data as bytes"""
-        return b''.join(self.chunks)
-    
-    def get_stream(self):
-        """Get data as BytesIO stream"""
-        return io.BytesIO(self.get_data())
-
 
 class StreamingBuffer:
     """A streaming buffer that acts like a file object for Google Drive upload"""
@@ -178,21 +99,20 @@ class StreamingBuffer:
         """Return whether object supports writing"""
         return False
 
-
 async def chunked_download_and_upload(message, filename, drive_uploader, file_size):
-    """Download file in chunks and upload to drive"""
-    print(f"🔄 Starting chunked download and upload for: {filename}")
+    """Download file and upload to drive using in-memory approach"""
+    print(f"🔄 Starting download and upload for: {filename}")
     
     download_result = {'success': False, 'error': None, 'data': None}
     upload_result = {'success': False, 'error': None}
     
     async def download_file():
-        """Download file completely first"""
+        """Download file to memory using BytesIO"""
         try:
             print("⬇️ Starting download from Telegram...")
             
-            # Create chunk collector
-            chunk_collector = ChunkCollector()
+            # Use BytesIO for in-memory storage
+            memory_buffer = io.BytesIO()
             
             download_progress = {'bytes_downloaded': 0, 'start_time': time.time()}
             
@@ -208,16 +128,17 @@ async def chunked_download_and_upload(message, filename, drive_uploader, file_si
                 print(f'\rDownload Progress: {percent:.1f}% {current/1024/1024:.1f}/{total/1024/1024:.1f} MB ({speed:.1f} MB/s)', end='', flush=True)
                 update_global_progress('downloading', filename, percent, total, current, speed)
             
-            # Download to chunk collector
+            # Download to BytesIO buffer
             await client.download_media(
                 message, 
-                file=chunk_collector,
+                file=memory_buffer,
                 progress_callback=progress_callback_download
             )
             
             print(f"\n✅ Download completed for: {filename}")
             download_result['success'] = True
-            download_result['data'] = chunk_collector.get_data()
+            download_result['data'] = memory_buffer.getvalue()  # Get bytes from BytesIO
+            memory_buffer.close()  # Clean up
             
         except Exception as e:
             print(f"\n❌ Download error: {e}")
@@ -267,7 +188,6 @@ async def chunked_download_and_upload(message, filename, drive_uploader, file_si
         print(f"❌ Error processing {filename}: {e}")
         return False
 
-
 def sanitize_filename(filename):
     """Remove or replace invalid characters for filename"""
     filename = re.sub(r'[<>:"/\\|?*]', '', filename)
@@ -276,7 +196,6 @@ def sanitize_filename(filename):
     if len(filename) > 200:
         filename = filename[:200]
     return filename
-
 
 def get_video_title(message):
     """Extract title from message text or use fallback"""
@@ -302,7 +221,6 @@ def get_video_title(message):
     
     return sanitize_filename(title)
 
-
 def get_file_size(message):
     """Get file size from message"""
     if (hasattr(message.media, 'document') and 
@@ -310,7 +228,6 @@ def get_file_size(message):
         hasattr(message.media.document, 'size')):
         return message.media.document.size
     return 0
-
 
 async def main():
     print("🚀 telegram_main() called - Starting process...")
@@ -396,7 +313,6 @@ async def main():
         print(f"❌ {error_msg}")
         update_global_progress('error', None, 0, 0, 0, 0)
         raise e
-
 
 if __name__ == "__main__":
     asyncio.run(main())
