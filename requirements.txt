@@ -1,60 +1,9 @@
-# Core Flask web framework
-Flask==2.3.3
+flask==2.3.3
 flask-cors==4.0.0
-
-# Google Drive API dependencies
-google-api-python-client==2.100.0
-google-auth==2.23.3
+Flask==2.3.3
+telethon==1.29.3
+google-api-python-client==2.105.0
+google-auth==2.23.4
 google-auth-oauthlib==1.1.0
 google-auth-httplib2==0.1.1
-
-# Telegram client library
-Telethon==1.29.3
-
-# HTTP requests library (used by Google APIs)
-requests==2.31.0
-
-# JSON Web Token support (dependency of google-auth)
-PyJWT==2.8.0
-
-# Cryptography library (dependency of Telethon and google-auth)
-cryptography==41.0.4
-
-# Protocol Buffers (dependency of google-api-python-client)
-protobuf==4.24.3
-
-# HTTP library (dependency of google-auth)
-httplib2==0.22.0
-
-# URL parsing library
-urllib3==2.0.4
-
-# Character encoding detection
-chardet==5.2.0
-
-# SSL certificate handling
-certifi==2023.7.22
-
-# Asynchronous I/O support (for Telegram client)
-asyncio==3.4.3
-
-# Threading support (built-in, but good to specify version compatibility)
-# No separate install needed for threading
-
-# JSON handling (built-in)
-# No separate install needed for json
-
-# File I/O and OS operations (built-in)
-# No separate install needed for os, io, tempfile
-
-# Time and datetime handling (built-in)
-# No separate install needed for time, datetime
-
-# Regular expressions (built-in)
-# No separate install needed for re
-
-# Queue for chunked operations (built-in)
-# No separate install needed for queue
-
-# Traceback for error handling (built-in)
-# No separate install needed for traceback
+standard-imghdr==3.13.0
