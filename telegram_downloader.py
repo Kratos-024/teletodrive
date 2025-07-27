@@ -55,7 +55,7 @@ class ChunkCollector:
     """Collects chunks and provides them as a file-like object"""
     def __init__(self):
         self.chunks = []
-        self.current_pos = 0
+        self.position = 0
         self.total_size = 0
         self.finished = False
     
@@ -65,6 +65,54 @@ class ChunkCollector:
             self.chunks.append(data)
             self.total_size += len(data)
         return len(data) if data else 0
+    
+    def read(self, size=-1):
+        """Read method for file-like interface"""
+        data = self.get_data()
+        if size == -1:
+            result = data[self.position:]
+            self.position = len(data)
+        else:
+            result = data[self.position:self.position + size]
+            self.position += len(result)
+        return result
+    
+    def seek(self, position, whence=0):
+        """Seek method for file-like interface"""
+        data_len = len(self.get_data())
+        
+        if whence == 0:  # os.SEEK_SET
+            self.position = max(0, min(position, data_len))
+        elif whence == 1:  # os.SEEK_CUR
+            self.position = max(0, min(self.position + position, data_len))
+        elif whence == 2:  # os.SEEK_END
+            self.position = max(0, data_len + position)
+        
+        return self.position
+    
+    def tell(self):
+        """Tell method for file-like interface"""
+        return self.position
+    
+    def close(self):
+        """Close method for file-like interface"""
+        pass
+    
+    def flush(self):
+        """Flush method for file-like interface"""
+        pass
+    
+    def readable(self):
+        """Return whether object supports reading"""
+        return True
+    
+    def writable(self):
+        """Return whether object supports writing"""
+        return True
+    
+    def seekable(self):
+        """Return whether object supports seeking"""
+        return True
     
     def get_data(self):
         """Get all collected data as bytes"""
@@ -112,6 +160,10 @@ class StreamingBuffer:
     
     def close(self):
         """Close the stream"""
+        pass
+    
+    def flush(self):
+        """Flush method for file-like interface"""
         pass
     
     def seekable(self):
