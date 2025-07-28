@@ -1,3 +1,6 @@
+import os
+os.environ['PYTHONUNBUFFERED'] = '1'
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 from flask import Flask, jsonify, request, make_response
 from flask_cors import CORS
 import asyncio
