@@ -76,8 +76,8 @@ async def process_single_video(message, filename, drive_uploader, file_size):
     """Process one video with memory-safe approach"""
     print(f"🔄 Processing: {filename} ({file_size / 1024 / 1024:.1f} MB)")
     
-    # Create temp file in /tmp (Render's ephemeral storage)
-    with tempfile.NamedTemporaryFile(suffix='.mp4', dir='/tmp', delete=False) as tmp_file:
+    # Use system's default temp directory (cross-platform compatible)
+    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_file:
         tmp_path = tmp_file.name
     
     try:
