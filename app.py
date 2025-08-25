@@ -985,3 +985,31 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"\n❌ Server startup error: {e}")
         print(f"📋 Traceback: {traceback.format_exc()}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# {
+#   "installed": {
+#     "client_id": "39315506244-6balp3gm5pvsnecnnn6jpf2k8uirq6ad.apps.googleusercontent.com",
+#     "project_id": "hopeful-canto-466517-v6",
+#     "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+#     "token_uri": "https://oauth2.googleapis.com/token",
+#     "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+#     "client_secret": "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",
+#     "redirect_uris": ["http://localhost"]
+#   }
+# }
